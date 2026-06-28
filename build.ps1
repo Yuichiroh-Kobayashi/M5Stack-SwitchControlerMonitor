@@ -97,7 +97,12 @@ Write-Output "Using user library root: $UserLibrariesDir"
 function Install-M5StackCore {
     param([string]$Version)
     Write-Output "Checking Core m5stack:esp32@$Version..."
-    $CoreList = arduino-cli core list | Out-String
+    try {
+        $CoreList = arduino-cli core list | Out-String
+    } catch {
+        throw "arduino-cli is not installed or not available in PATH. Please install Arduino CLI and try again. Original error: $_"
+    }
+
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to list installed Arduino cores."
     }
