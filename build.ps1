@@ -99,7 +99,7 @@ function Install-M5StackCore {
     Write-Output "Checking Core m5stack:esp32@$Version..."
     try {
         $CoreList = arduino-cli core list | Out-String
-    } catch {
+    } catch [System.Management.Automation.CommandNotFoundException] {
         throw "arduino-cli is not installed or not available in PATH. Please install Arduino CLI and try again. Original error: $_"
     }
 
