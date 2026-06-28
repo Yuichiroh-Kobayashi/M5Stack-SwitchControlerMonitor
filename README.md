@@ -9,9 +9,9 @@ UI/電源制御は `M5Unified` 前提で実装しており、`M5Stack.h` では�
 
 - **USB Host 接続**: M5Stack USB モジュール (MAX3421E) を介してコントローラーを認識
 - **入力可視化**:
-    - **ボタン**: A, B, X, Y, L, R, ZL, ZR, +, -, Home, Capture, Stick Click の押下状態を表示
-    - **アナログスティック**: 左・右スティックの現在値を数値とグラフィックで表示
-    - **十字キー (DPAD)**: 押されている方向 (UP, RIGHT, DOWN-LEFT 等) をテキストとビジュアルで表示
+  - **ボタン**: A, B, X, Y, L, R, ZL, ZR, +, -, Home, Capture, Stick Click の押下状態を表示
+  - **アナログスティック**: 左・右スティックの現在値を数値とグラフィックで表示
+  - **十字キー (DPAD)**: 押されている方向 (UP, RIGHT, DOWN-LEFT 等) をテキストとビジュアルで表示
 - **デバッグ情報**: 生の HID レポートデータ (Hex Dump) を表示
 - **バッテリ残量表示**: 画面最下段の送信データ右側に `BAT: **%` 形式で M5Unified の参考残量を表示
   - 51%以上: 白色
@@ -42,6 +42,7 @@ UI/電源制御は `M5Unified` 前提で実装しており、`M5Stack.h` では�
 ### ボタン (Byte 0, Byte 1) ビット詳細
 
 **Byte 0: Button 1**
+
 | Bit | ボタン |
 |:---:|:---|
 | 0 | A |
@@ -54,6 +55,7 @@ UI/電源制御は `M5Unified` 前提で実装しており、`M5Stack.h` では�
 | 7 | ZR |
 
 **Byte 1: Button 2**
+
 | Bit | ボタン |
 |:---:|:---|
 | 0 | - (Minus) |
@@ -92,6 +94,7 @@ UI/電源制御は `M5Unified` 前提で実装しており、`M5Stack.h` では�
 コンパイル環境を用意しなくても、GitHub Releases からダウンロードしたビルド済みバイナリを書き込めます。
 
 ### 必要なもの
+
 - [Arduino CLI](https://arduino.github.io/arduino-cli/installation/) のインストール
 - M5Stack を PC に接続
 
@@ -128,6 +131,7 @@ UI/電源制御は `M5Unified` 前提で実装しており、`M5Stack.h` では�
 ビルドには [Arduino CLI](https://arduino.github.io/arduino-cli/) を使用します。
 
 ### 依存ライブラリ (自動インストールされます)
+
 - M5Unified
 - USB Host Shield Library 2.0
 
@@ -156,27 +160,33 @@ cp config.json.sample config.json
 3. `build.ps1` 内の既定値
 
 ## 使い方
+
 ```powershell
 .\build.ps1
 ```
 
 ### ビルドのみ
+
 ```powershell
 .\build.ps1 -SkipUpload
 ```
 
 ### ビルドと書き込み (COMポート指定)
+
 ```powershell
 .\build.ps1 -Port COM5
 ```
 
 ### バイナリを build/ フォルダに出力する
+
 ```powershell
 .\build.ps1 -ExportBinaries
 ```
+
 `build/` フォルダに `.bin` が生成されます。書き込みはスキップされます。
 
 ### 旧 Core 向けにビルドする場合
+
 ```powershell
 .\build.ps1 -Board core
 ```
