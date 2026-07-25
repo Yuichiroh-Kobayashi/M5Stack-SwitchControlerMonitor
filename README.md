@@ -329,7 +329,9 @@ Link状態は画面描画およびUDP送信とは独立して250ms周期で再�
 
 ### 画面・シリアル表示
 
-画面と115200bpsのUSBシリアルへ、USB Host初期化、HIDパーサ取付結果、DualSense接続、VID/PID、HID受信回数、最終HID受信時刻と経過時間、W5500初期化、Ethernetリンク、IP、UDP socket状態、UDP成功／失敗／Link OFFスキップ回数、シーケンス、稼働時間、ESP32リセット理由、`input_valid` を表示します。UDPを有効にしない`LanInitializedNoRuntimeAccess`と`LanLinkStatusOnly`ではUDP socket状態を`SKIP`と表示します。画面にはさらにUDP総処理時間の直近値／最大値、実経過時間で正規化した`loop()`回数/秒と`Usb.Task()`呼出し回数/秒を表示します。
+画面と115200bpsのUSBシリアルへ、USB Host初期化、HIDパーサ取付結果、DualSense接続、VID/PID、HID受信回数、最終HID受信時刻と経過時間、W5500初期化、Ethernetリンク、設定IPと実IP、UDP socket状態、UDP成功／失敗／Link OFFスキップ回数、シーケンス、稼働時間、ESP32リセット理由、`input_valid` を表示します。UDPを有効にしない`LanInitializedNoRuntimeAccess`と`LanLinkStatusOnly`ではUDP socket状態を`SKIP`と表示します。画面にはさらにUDP総処理時間の直近値／最大値、実経過時間で正規化した`loop()`回数/秒と`Usb.Task()`呼出し回数/秒を表示します。
+
+`UDP OK` はあくまでW5500へ送信できた回数であり、送信先Raspberry Piで受信できた回数ではありません。Pi到達の確認は別手段で行います。
 
 シリアルの定期状態行は`[STATUS]`で始まり、パーサ状態は`PARSER=OK`または`PARSER=FAIL`で表示されます。詳細な性能行は`[PERF]`で始まり、UDP各処理と総処理の直近値／最大値（マイクロ秒）、`LOOP_PER_SEC`、`USB_TASK_PER_SEC`を出力します。画面とログはキャッシュ済み診断値だけを参照し、表示処理から`Ethernet.*`または`udp.*`を呼びません。
 

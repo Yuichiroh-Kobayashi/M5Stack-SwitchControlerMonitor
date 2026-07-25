@@ -133,6 +133,8 @@ struct DiagnosticState {
     uint8_t max3421eRevision = 0;
     uint32_t readyToNotReadyCount = 0;
     EthernetLinkStatus linkStatus = Unknown;
+    String configuredIpText = "N/A";
+    String actualIpText = "N/A";
     String ipText = "N/A";
     uint64_t hidReportCount = 0;
     uint32_t lastHidReportMs = 0;
@@ -438,18 +440,21 @@ void initializeLan() {
                    DiagnosticConfig::kSubnet);
 
     diagnostic.w5500InitOk = Ethernet.hardwareStatus() == EthernetW5500;
+    diagnostic.configuredIpText = DiagnosticConfig::kLocalIp.toString();
     if (diagnostic.w5500InitOk) {
         Ethernet.setRetransmissionTimeout(20);
         Ethernet.setRetransmissionCount(1);
-        diagnostic.ipText = Ethernet.localIP().toString();
     }
+    diagnostic.actualIpText = Ethernet.localIP().toString();
+    diagnostic.ipText = diagnostic.actualIpText;
     diagnostic.udpSocketReady = udpEnabled() && diagnostic.w5500InitOk &&
                                 udp.begin(DiagnosticConfig::kLocalUdpPort) == 1;
 
-    Serial.printf("[INIT] W5500=%s UDP socket=%s IP=%s\n",
+    Serial.printf("[INIT] W5500=%s UDP socket=%s IP(cfg=%s actual=%s)\n",
                   w5500StatusText(),
                   udpSocketStatusText(),
-                  diagnostic.ipText.c_str());
+                  diagnostic.configuredIpText.c_str(),
+                  diagnostic.actualIpText.c_str());
 }
 
 void updateUsbIdentity() {
@@ -616,7 +621,8 @@ void drawStatus(uint32_t now) {
     M5.Display.printf("LAN CS%d INT%d RST%d\n", DiagnosticConfig::kLanCsPin,
                       DiagnosticConfig::kLanIntPin,
                       DiagnosticConfig::kLanResetPin);
-    M5.Display.printf("IP:%s\n", diagnostic.ipText.c_str());
+    M5.Display.printf("IP cfg:%s\n", diagnostic.configuredIpText.c_str());
+    M5.Display.printf("IP act:%s\n", diagnostic.actualIpText.c_str());
     M5.Display.printf("UDP socket:%s\n", udpSocketStatusText());
     M5.Display.printf("UDP OK:%lu FAIL:%lu\n",
                       static_cast<unsigned long>(diagnostic.udpSentCount),
@@ -657,7 +663,8 @@ void logStatus(uint32_t now) {
         static_cast<unsigned long>(diagnostic.lastHidReportMs),
         static_cast<unsigned long>(now - diagnostic.lastHidReportMs),
         w5500StatusText(), diagnosticLinkStatusText(),
-        diagnostic.ipText.c_str(),
+        diagnostic.configuredIpText.c_str(),
+        diagnostic.actualIpText.c_str(),
         udpSocketStatusText(),
         static_cast<unsigned long>(diagnostic.udpSentCount),
         static_cast<unsigned long>(diagnostic.udpFailedCount),
