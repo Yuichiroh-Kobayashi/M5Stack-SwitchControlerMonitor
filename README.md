@@ -230,7 +230,7 @@ LAN CSのG13は`I2S_DOUT`、LAN RESETのG0は`I2S_LRCK`、USB INTのG14は`I2S_D
 
 ### 診断設定
 
-ネットワーク値、送信周期、LANピン、入力有効期限、初期化順序は、すべて `M5Stack-PS5CoRELanStackDiagnostic.ino` 冒頭の `DiagnosticConfig` にあります。
+ネットワーク値、送信周期、LANピン、入力有効期限、診断モード、初期化順序は、すべて `M5Stack-PS5CoRELanStackDiagnostic.ino` 冒頭の `DiagnosticConfig` にあります。診断モードと初期化順序は独立して変更できます。
 
 | 設定 | 初期値 |
 |:---|:---|
@@ -240,7 +240,28 @@ LAN CSのG13は`I2S_DOUT`、LAN RESETのG0は`I2S_LRCK`、USB INTのG14は`I2S_D
 | ローカルUDP port | `50000` |
 | UDP送信周期 | `20 ms` |
 | 入力有効期限 | 最終HID受信から `500 ms` |
+| 診断モード | `FullUdp` |
 | 初期化順序 | `UsbThenLan` |
+
+| 診断モード | LAN RESET | LAN用`SPI.begin`／Ethernet初期化 | 周期的link取得 | UDP |
+|:---|:---:|:---:|:---:|:---:|
+| `UsbOnlyWithLanHeldReset` | LOW保持 | なし | なし | なし |
+| `LanInitializedNoRuntimeAccess` | 初期化時に解除 | あり | なし | なし |
+| `LanLinkStatusOnly` | 初期化時に解除 | あり | あり | なし |
+| `FullUdp` | 初期化時に解除 | あり | あり | 20ms周期 |
+
+| 診断モード | USB認識の期待値 | W5500表示 | Link表示 | UDPの期待値 |
+|:---|:---|:---:|:---:|:---|
+| `UsbOnlyWithLanHeldReset` | DualSenseを継続認識 | `SKIP` | `SKIP` | 送信なし、カウント0 |
+| `LanInitializedNoRuntimeAccess` | DualSenseを継続認識 | `OK` | `SKIP` | 送信なし、カウント0 |
+| `LanLinkStatusOnly` | DualSenseを継続認識 | `OK` | LAN接続時`ON` | 送信なし、カウント0 |
+| `FullUdp` | DualSenseを継続認識 | `OK` | LAN接続時`ON` | 20ms周期で`UDP OK`増加 |
+
+診断モードを変更する場合は、次の1行を変更して再ビルドします。
+
+```cpp
+constexpr DiagnosticMode kDiagnosticMode = DiagnosticMode::UsbOnlyWithLanHeldReset;
+```
 
 初期化順序を反転する場合は、次の1行だけを変更して再ビルドします。
 
@@ -275,6 +296,16 @@ USB HostまたはW5500の初期化が失敗しても停止せず、もう一方�
 
 `UDP OK` はW5500へパケットを渡せた回数であり、送信先アプリでの受信を保証する値ではありません。ケーブル切断は別途 `Link` で確認してください。`UDP FAIL` はソケット未初期化、`beginPacket`、書き込み、または `endPacket` の失敗回数です。
 
+#### FullUdpのLink OFF時動作
+
+`FullUdp`でもLinkが`ON`でない場合（`OFF`、`UNKNOWN`、またはLink取得を行わない`SKIP`相当）は、`udp.beginPacket()`、`udp.write()`、`udp.endPacket()`を呼びません。この場合は`UDP SKIP`だけが増加し、意図的に送信しなかった回数を`UDP FAIL`へ加算しません。Link OFF中もUSB HID処理と画面更新が通常速度を維持することを期待します。
+
+Link状態は画面描画およびUDP送信とは独立して250ms周期で再確認します。Linkが`ON`へ復帰すると20ms周期のUDP送信を再開しますが、Link OFF中の未送信分は蓄積せず、復帰時に連続送信しません。
+
+#### 追加診断値
+
+実際にUDP送信を試行したとき、`micros()`で`beginPacket()`、`write()`、`endPacket()`、UDP処理全体の直近所要時間と最大所要時間を個別に計測します。Link OFFによるスキップでは直近値と最大値を変更しません。さらに、1秒ごとの`loop()`回数と`Usb.Task()`呼出し回数をカウンタ差分で記録し、UDP処理によるUSB処理の飢餓を確認できるようにします。
+
 ### 再現ビルド
 
 必要ライブラリは `M5Unified`、`USB Host Shield Library 2.0`、診断スケッチの場合のみ `M5-Ethernet@4.0.0` です。`build.ps1` は既存どおり `m5stack:esp32@3.3.7` を使用し、不足ライブラリをArduino CLIで導入します。`M5-Ethernet` が未導入の場合は4.0.0を導入しますが、異なるバージョンが既に存在する場合は共有ライブラリ環境を上書きせず、必要版・現在版・パスを表示してエラー終了します。
@@ -298,9 +329,44 @@ USB HostまたはW5500の初期化が失敗しても停止せず、もう一方�
 
 ### 画面・シリアル表示
 
-画面と115200bpsのUSBシリアルへ、USB Host初期化、HIDパーサ取付結果、DualSense接続、VID/PID、HID受信回数、最終HID受信時刻、W5500初期化、Ethernetリンク、IP、UDP成功／失敗回数、シーケンス、稼働時間、ESP32リセット理由、`input_valid` を表示します。シリアルの定期行は `[STATUS]` で始まり、パーサ状態は `PARSER=OK` または `PARSER=FAIL` で表示されます。
+画面と115200bpsのUSBシリアルへ、USB Host初期化、HIDパーサ取付結果、DualSense接続、VID/PID、HID受信回数、最終HID受信時刻と経過時間、W5500初期化、Ethernetリンク、IP、UDP socket状態、UDP成功／失敗／Link OFFスキップ回数、シーケンス、稼働時間、ESP32リセット理由、`input_valid` を表示します。UDPを有効にしない`LanInitializedNoRuntimeAccess`と`LanLinkStatusOnly`ではUDP socket状態を`SKIP`と表示します。画面にはさらにUDP総処理時間の直近値／最大値、実経過時間で正規化した`loop()`回数/秒と`Usb.Task()`呼出し回数/秒を表示します。
+
+シリアルの定期状態行は`[STATUS]`で始まり、パーサ状態は`PARSER=OK`または`PARSER=FAIL`で表示されます。詳細な性能行は`[PERF]`で始まり、UDP各処理と総処理の直近値／最大値（マイクロ秒）、`LOOP_PER_SEC`、`USB_TASK_PER_SEC`を出力します。画面とログはキャッシュ済み診断値だけを参照し、表示処理から`Ethernet.*`または`udp.*`を呼びません。
+
+### 次の実機試験
+
+#### 試験5-A: Link OFF
+
+期待値:
+
+```text
+LINK=OFF
+UDP_OK=0
+UDP_FAIL=0
+UDP_SKIP=増加
+HIDカウント=通常速度で増加
+VID=054C
+PID=0CE6
+READY_DROP=0
+画面更新=通常速度
+```
+
+#### 試験5-B: Link ON、受信側なし
+
+- LANケーブルをリンク成立するスイッチまたはPCへ接続する。
+- 送信先アプリは起動しない。
+- UDP各処理／総処理の所要時間とHID更新頻度を確認する。
+
+#### 試験5-C: Link ON、受信側あり
+
+- 送信先を`192.168.50.20/24`に設定する。
+- UDP port `50000`を使用する。
+- 24バイトパケットを約20ms周期で受信する。
+- HID更新、UDP送信、画面更新が同時に継続することを確認する。
 
 ### 実機試験チェックリスト
+
+以下の10分、60分、15分試験は、前段の切り分けで`FullUdp`モードまで到達し、USB認識、W5500初期化、Link取得、UDP送信が同時に成立した後に実施します。
 
 - [ ] 電源OFFでUSB DIPがSS CH2／INT CH2のみONであることを確認する。
 - [ ] 電源OFFでLAN CSN/INTN/RSTNが上表のM5-Bus 23/2/24番へ導通し、G1/G14と短絡していないことを確認する。
