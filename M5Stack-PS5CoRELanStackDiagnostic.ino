@@ -439,7 +439,9 @@ void initializeLan() {
 
     diagnostic.w5500InitOk = Ethernet.hardwareStatus() == EthernetW5500;
     if (diagnostic.w5500InitOk) {
-        diagnostic.ipText = DiagnosticConfig::kLocalIp.toString();
+        Ethernet.setRetransmissionTimeout(20);
+        Ethernet.setRetransmissionCount(1);
+        diagnostic.ipText = Ethernet.localIP().toString();
     }
     diagnostic.udpSocketReady = udpEnabled() && diagnostic.w5500InitOk &&
                                 udp.begin(DiagnosticConfig::kLocalUdpPort) == 1;
