@@ -2,7 +2,7 @@ param (
     [string]$Port = "",
     [ValidateSet("core", "core2", "cores3se")]
     [string]$Board = "core2",
-    [ValidateSet("M5Stack-SwitchController2CoREWirelessSender.ino", "M5Stack-PS5CoREWirelessSender.ino", "M5Stack-PS5CoREWirelessTransmitter.ino", "M5Stack-PS5CoREWirelessSender_Blue.ino", "M5Stack-PS5CoREWirelessReceiver.ino", "M5Stack-PS5CoRELanStackDiagnostic.ino")]
+    [ValidateSet("M5Stack-SwitchController2CoREWirelessSender.ino", "M5Stack-PS5CoREWirelessSender.ino", "M5Stack-PS5CoREWirelessTransmitter.ino", "M5Stack-PS5CoREWirelessSender_Blue.ino", "M5Stack-PS5CoREWirelessReceiver.ino", "M5Stack-PS5CoRELanStackDiagnostic.ino", "M5Stack-PS5CoRELANSender.ino", "M5Stack-PS5CoRELANReceiver.ino")]
     [string]$SketchName = "M5Stack-SwitchController2CoREWirelessSender.ino",
     [ValidateRange(1, 3)]
     [int]$SsChannel = 1,
@@ -72,11 +72,16 @@ if ($Board -eq "cores3se") {
 $FQBN = $BoardMap[$Board]
 $SelectedSsGpio = $SsPinMap[$Board][$SsChannel - 1]
 $SketchPath = Join-Path $PSScriptRoot $SketchName
+$CoreS3LanSketches = @(
+    "M5Stack-PS5CoRELanStackDiagnostic.ino",
+    "M5Stack-PS5CoRELANSender.ino",
+    "M5Stack-PS5CoRELANReceiver.ino"
+)
 if (!(Test-Path $SketchPath)) {
     throw "Sketch file not found: $SketchPath"
 }
-if ($SketchName -eq "M5Stack-PS5CoRELanStackDiagnostic.ino" -and $Board -ne "cores3se") {
-    throw "M5Stack-PS5CoRELanStackDiagnostic.ino supports only -Board cores3se."
+if ($SketchName -in $CoreS3LanSketches -and $Board -ne "cores3se") {
+    throw "$SketchName supports only -Board cores3se."
 }
 $SelectedIntGpio = $IntPinMap[$Board][$IntChannel - 1]
 $SelectedMisoGpio = $MisoPinMap[$Board]
@@ -381,7 +386,7 @@ if (!(Test-Path $UserLibrariesDir)) {
 Install-Library -LibraryName "M5Unified" -ExpectedDir (Join-Path $UserLibrariesDir "M5Unified")
 Install-Library -LibraryName "USB Host Shield Library 2.0" -ExpectedDir $UsbHostShieldDir
 Update-UsbHostShieldLibrary -LibDir $UsbHostShieldDir
-if ($SketchName -eq "M5Stack-PS5CoRELanStackDiagnostic.ino") {
+if ($SketchName -in $CoreS3LanSketches) {
     Install-PinnedLibrary -LibraryName "M5-Ethernet" -Version $M5EthernetVersion -ExpectedDir $M5EthernetDir
 }
 
@@ -413,6 +418,13 @@ if ($Board -eq "cores3se") {
     # m5stack:esp32 3.2.5 uses a board macro spelling different from the
     # upstream PR #843 guard. Define the PR guard explicitly for both cores.
     $ExtraFlags += "-DARDUINO_M5STACK_CORES3"
+    # build.extra_flags is supplied below, so retain the CoreS3 board defaults
+    # required for application Serial on COM8 and the board's PSRAM support.
+    $ExtraFlags += "-DBOARD_HAS_PSRAM"
+    $ExtraFlags += "-DARDUINO_USB_MODE=1"
+    $ExtraFlags += "-DARDUINO_USB_CDC_ON_BOOT=1"
+    $ExtraFlags += "-DARDUINO_USB_MSC_ON_BOOT=0"
+    $ExtraFlags += "-DARDUINO_USB_DFU_ON_BOOT=0"
 }
 $ExtraFlags = $ExtraFlags -join " "
 
@@ -435,6 +447,12 @@ $CompileArgs = @(
     "--build-property", "build.extra_flags=$ExtraFlags",
     (Join-Path $BuildSketchDir $SketchName)
 )
+if ($Board -eq "cores3se") {
+    # Avoid a stale Arduino CLI core.a built before the CoreS3 USB CDC flags
+    # were retained above. Installed cores and libraries are not modified.
+    $CompileArgs += "--clean"
+    Write-Output "CleanBuild: enabled for cores3se"
+}
 if ($ExportBinaries) {
     $CompileArgs += "--export-binaries"
     Write-Output "ExportBinaries: enabled"
@@ -455,7 +473,12 @@ if ($ExportBinaries) {
     Write-Output ""
     Write-Output "--- Export Binaries ---"
     Write-Output "Output directory: $BuildOutputDir"
-    $ExportPrefix = if ($SketchName -eq "M5Stack-PS5CoRELanStackDiagnostic.ino") { "PS5LanStackDiagnostic" } else { "SwitchSender" }
+    $ExportPrefix = switch ($SketchName) {
+        "M5Stack-PS5CoRELanStackDiagnostic.ino" { "PS5LanStackDiagnostic" }
+        "M5Stack-PS5CoRELANSender.ino" { "PS5LANSender" }
+        "M5Stack-PS5CoRELANReceiver.ino" { "PS5LANReceiver" }
+        default { "SwitchSender" }
+    }
     $ExportName = "${ExportPrefix}_${Board}_SS-CH${SsChannel}_INT-CH${IntChannel}.bin"
     # Arduino CLI retains the .ino suffix: <Sketch>.ino.bin. Restrict lookup
     # to this FQBN output directory so a stale binary from another board is not used.

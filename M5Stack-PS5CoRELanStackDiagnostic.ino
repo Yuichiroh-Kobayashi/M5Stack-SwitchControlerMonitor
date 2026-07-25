@@ -65,7 +65,10 @@ constexpr uint8_t kLanResetPin = 0;   // M5-Bus pin 24
 constexpr uint32_t kUdpIntervalMs = 20;
 constexpr uint32_t kInputValidWindowMs = 500;
 constexpr uint32_t kLinkPollIntervalMs = 250;
-constexpr uint32_t kDisplayIntervalMs = 250;
+// A full LCD refresh is comparatively expensive on the shared runtime. Keep
+// serial status at 1 Hz and refresh the diagnostic screen less often so the
+// 20 ms UDP/HID schedule remains the primary workload.
+constexpr uint32_t kDisplayIntervalMs = 5000;
 constexpr uint32_t kSerialIntervalMs = 1000;
 constexpr uint16_t kLocalUdpPort = 50000;
 constexpr uint16_t kDestinationUdpPort = 50000;
@@ -125,6 +128,9 @@ struct DiagnosticState {
     bool parserAttached = false;
     bool lanInitAttempted = false;
     bool w5500InitOk = false;
+    bool explicitConfigApplied = false;
+    bool lanConfigOk = false;
+    bool udpSocketAttempted = false;
     bool udpSocketReady = false;
     bool hidReady = false;
     bool previousHidReady = false;
@@ -134,10 +140,14 @@ struct DiagnosticState {
     uint32_t readyToNotReadyCount = 0;
     EthernetLinkStatus linkStatus = Unknown;
     String configuredIpText = "N/A";
+    String ipAfterBeginText = "N/A";
     String actualIpText = "N/A";
-    String ipText = "N/A";
+    String actualGatewayText = "N/A";
+    String actualSubnetText = "N/A";
     uint64_t hidReportCount = 0;
-    uint32_t lastHidReportMs = 0;
+    uint64_t validHidReportCount = 0;
+    uint32_t lastValidHidReportMs = 0;
+    bool validInputThisSession = false;
     uint32_t udpSentCount = 0;
     uint32_t udpFailedCount = 0;
     uint32_t udpSkippedNoLinkCount = 0;
@@ -227,10 +237,14 @@ public:
         padState.rawLen = len;
 
         ++diagnostic.hidReportCount;
-        diagnostic.lastHidReportMs = millis();
 
         if (isPs5ControllerReport(buf, len, isRptId)) {
             parsePs5ControllerReport(buf, isRptId);
+            if (padState.isPs5) {
+                ++diagnostic.validHidReportCount;
+                diagnostic.lastValidHidReportMs = millis();
+                diagnostic.validInputThisSession = true;
+            }
         }
     }
 };
@@ -342,7 +356,7 @@ const char* w5500StatusText() {
 }
 
 const char* udpSocketStatusText() {
-    if (!udpEnabled()) return "SKIP";
+    if (!diagnostic.udpSocketAttempted) return "SKIP";
     return diagnostic.udpSocketReady ? "OK" : "FAIL";
 }
 
@@ -363,8 +377,10 @@ bool dualSenseConnected() {
 }
 
 bool inputIsValid(uint32_t now) {
-    return dualSenseConnected() && diagnostic.hidReportCount > 0 &&
-           now - diagnostic.lastHidReportMs <= DiagnosticConfig::kInputValidWindowMs;
+    return dualSenseConnected() && diagnostic.validInputThisSession &&
+           diagnostic.validHidReportCount > 0 &&
+           now - diagnostic.lastValidHidReportMs <=
+               DiagnosticConfig::kInputValidWindowMs;
 }
 
 uint16_t controllerButtonBits() {
@@ -392,12 +408,11 @@ inline void deselectExternalSpiDevices() {
 }
 
 void prepareSharedSpiPins() {
-    // Set output latches before enabling outputs to avoid selecting either device.
-    deselectExternalSpiDevices();
     pinMode(USB_HOST_SHIELD_SS_GPIO, OUTPUT);
     pinMode(DiagnosticConfig::kLanCsPin, OUTPUT);
-    digitalWrite(DiagnosticConfig::kLanResetPin, LOW);
+    deselectExternalSpiDevices();
     pinMode(DiagnosticConfig::kLanResetPin, OUTPUT);
+    digitalWrite(DiagnosticConfig::kLanResetPin, LOW);
     pinMode(DiagnosticConfig::kLanIntPin, INPUT_PULLUP);
 }
 
@@ -419,6 +434,16 @@ void initializeUsbHost() {
 
 void initializeLan() {
     deselectExternalSpiDevices();
+    diagnostic.configuredIpText = DiagnosticConfig::kLocalIp.toString();
+    diagnostic.ipAfterBeginText = "N/A";
+    diagnostic.actualIpText = "N/A";
+    diagnostic.actualGatewayText = "N/A";
+    diagnostic.actualSubnetText = "N/A";
+    diagnostic.explicitConfigApplied = false;
+    diagnostic.lanConfigOk = false;
+    diagnostic.udpSocketAttempted = false;
+    diagnostic.udpSocketReady = false;
+
     if (!lanInitializationEnabled()) {
         digitalWrite(DiagnosticConfig::kLanResetPin, LOW);
         Serial.println("[INIT] W5500 skipped; LAN RESET held LOW");
@@ -440,26 +465,64 @@ void initializeLan() {
                    DiagnosticConfig::kSubnet);
 
     diagnostic.w5500InitOk = Ethernet.hardwareStatus() == EthernetW5500;
-    diagnostic.configuredIpText = DiagnosticConfig::kLocalIp.toString();
     if (diagnostic.w5500InitOk) {
+        const IPAddress ipAfterBegin = Ethernet.localIP();
+        diagnostic.ipAfterBeginText = ipAfterBegin.toString();
+
+        // M5-Ethernet 4.0.0's fixed-IP begin() reads IPAddress::_address.bytes
+        // from offset zero. ESP32 core 3.3.7 stores IPv4 at offset 12, while
+        // these setters use raw_address() and therefore select the IPv4 bytes.
+        Ethernet.setMACAddress(DiagnosticConfig::kMacAddress);
+        Ethernet.setLocalIP(DiagnosticConfig::kLocalIp);
+        Ethernet.setGatewayIP(DiagnosticConfig::kGateway);
+        Ethernet.setSubnetMask(DiagnosticConfig::kSubnet);
+        Ethernet.setDnsServerIP(DiagnosticConfig::kDns);
+        diagnostic.explicitConfigApplied = true;
+
+        const IPAddress actualIp = Ethernet.localIP();
+        const IPAddress actualGateway = Ethernet.gatewayIP();
+        const IPAddress actualSubnet = Ethernet.subnetMask();
+        diagnostic.actualIpText = actualIp.toString();
+        diagnostic.actualGatewayText = actualGateway.toString();
+        diagnostic.actualSubnetText = actualSubnet.toString();
+        diagnostic.lanConfigOk =
+            actualIp == DiagnosticConfig::kLocalIp &&
+            actualGateway == DiagnosticConfig::kGateway &&
+            actualSubnet == DiagnosticConfig::kSubnet;
+
         Ethernet.setRetransmissionTimeout(20);
         Ethernet.setRetransmissionCount(1);
     }
-    diagnostic.actualIpText = Ethernet.localIP().toString();
-    diagnostic.ipText = diagnostic.actualIpText;
-    diagnostic.udpSocketReady = udpEnabled() && diagnostic.w5500InitOk &&
-                                udp.begin(DiagnosticConfig::kLocalUdpPort) == 1;
 
-    Serial.printf("[INIT] W5500=%s UDP socket=%s IP(cfg=%s actual=%s)\n",
+    if (udpEnabled() && diagnostic.w5500InitOk && diagnostic.lanConfigOk) {
+        diagnostic.udpSocketAttempted = true;
+        diagnostic.udpSocketReady =
+            udp.begin(DiagnosticConfig::kLocalUdpPort) == 1;
+    }
+
+    Serial.printf(
+        "[INIT] W5500=%s IP_CFG=%s IP_AFTER_BEGIN=%s IP_ACT=%s "
+        "GATEWAY_ACT=%s SUBNET_ACT=%s EXPLICIT_CFG=%s LAN_CFG=%s "
+        "UDP_SOCKET=%s\n",
                   w5500StatusText(),
-                  udpSocketStatusText(),
                   diagnostic.configuredIpText.c_str(),
-                  diagnostic.actualIpText.c_str());
+                  diagnostic.ipAfterBeginText.c_str(),
+                  diagnostic.actualIpText.c_str(),
+                  diagnostic.actualGatewayText.c_str(),
+                  diagnostic.actualSubnetText.c_str(),
+                  diagnostic.explicitConfigApplied ? "OK" : "SKIP",
+                  diagnostic.lanConfigOk ? "OK" : "FAIL",
+                  udpSocketStatusText());
 }
 
 void updateUsbIdentity() {
     diagnostic.usbTaskState = diagnostic.usbInitOk ? Usb.getUsbTaskState() : 0;
     diagnostic.hidReady = diagnostic.usbInitOk && Hid.isReady();
+    if (diagnostic.hidReady != diagnostic.previousHidReady) {
+        resetControllerState();
+        diagnostic.validInputThisSession = false;
+        diagnostic.lastValidHidReportMs = 0;
+    }
     if (diagnostic.hidReadyObserved && diagnostic.previousHidReady &&
         !diagnostic.hidReady) {
         ++diagnostic.readyToNotReadyCount;
@@ -609,12 +672,14 @@ void drawStatus(uint32_t now) {
     M5.Display.printf("VID:%04X PID:%04X HID:%llu\n", diagnostic.vid,
                       diagnostic.pid,
                       static_cast<unsigned long long>(diagnostic.hidReportCount));
-    if (diagnostic.hidReportCount == 0) {
-        M5.Display.println("Last HID:-");
+    M5.Display.printf("Valid HID:%llu\n",
+                      static_cast<unsigned long long>(diagnostic.validHidReportCount));
+    if (diagnostic.validHidReportCount == 0) {
+        M5.Display.println("Last valid HID:-");
     } else {
-        M5.Display.printf("Last HID:%lu ms (%lums ago)\n",
-                          static_cast<unsigned long>(diagnostic.lastHidReportMs),
-                          static_cast<unsigned long>(now - diagnostic.lastHidReportMs));
+        M5.Display.printf("Last valid:%lu (%lums ago)\n",
+                          static_cast<unsigned long>(diagnostic.lastValidHidReportMs),
+                          static_cast<unsigned long>(now - diagnostic.lastValidHidReportMs));
     }
     M5.Display.printf("W5500:%s Link:%s\n", w5500StatusText(),
                       diagnosticLinkStatusText());
@@ -622,7 +687,11 @@ void drawStatus(uint32_t now) {
                       DiagnosticConfig::kLanIntPin,
                       DiagnosticConfig::kLanResetPin);
     M5.Display.printf("IP cfg:%s\n", diagnostic.configuredIpText.c_str());
+    M5.Display.printf("IP begin:%s\n", diagnostic.ipAfterBeginText.c_str());
     M5.Display.printf("IP act:%s\n", diagnostic.actualIpText.c_str());
+    M5.Display.printf("GW:%s SUB:%s\n", diagnostic.actualGatewayText.c_str(),
+                      diagnostic.actualSubnetText.c_str());
+    M5.Display.printf("LAN cfg:%s\n", diagnostic.lanConfigOk ? "OK" : "FAIL");
     M5.Display.printf("UDP socket:%s\n", udpSocketStatusText());
     M5.Display.printf("UDP OK:%lu FAIL:%lu\n",
                       static_cast<unsigned long>(diagnostic.udpSentCount),
@@ -644,11 +713,20 @@ void drawStatus(uint32_t now) {
 }
 
 void logStatus(uint32_t now) {
+    const uint32_t lastHidAgeMs =
+        diagnostic.validHidReportCount == 0
+            ? 0
+            : now - diagnostic.lastValidHidReportMs;
+
     Serial.printf(
         "[STATUS] MODE=%s USB_INIT=%s PARSER=%s USB_TASK=0x%02X HID_READY=%u "
         "MAX_REV=0x%02X READY_DROP=%lu USB_INT=%d USB_CS=%d LAN_CS=%d LAN_RST=%d "
-        "DS=%s VID=%04X PID=%04X HID_COUNT=%llu LAST_HID_MS=%lu "
-        "LAST_HID_AGE_MS=%lu W5500_INIT=%s LINK=%s IP=%s UDP_SOCKET=%s UDP_OK=%lu "
+        "DS=%s VID=%04X PID=%04X HID_COUNT=%llu VALID_HID_COUNT=%llu "
+        "LAST_HID_MS=%lu "
+        "LAST_HID_AGE_MS=%lu W5500_INIT=%s LINK=%s "
+        "IP_CFG=%s IP_AFTER_BEGIN=%s IP_ACT=%s GATEWAY_ACT=%s "
+        "SUBNET_ACT=%s EXPLICIT_CFG=%s LAN_CFG=%s "
+        "UDP_SOCKET=%s UDP_OK=%lu "
         "UDP_FAIL=%lu UDP_SKIP=%lu SEQ=%lu UPTIME_MS=%lu RESET=%s INPUT_VALID=%u\n",
         diagnosticModeText(), diagnostic.usbInitOk ? "OK" : "FAIL",
         diagnostic.parserAttached ? "OK" : "FAIL",
@@ -660,11 +738,17 @@ void logStatus(uint32_t now) {
         dualSenseConnected() ? "CONNECTED" : "DISCONNECTED", diagnostic.vid,
         diagnostic.pid,
         static_cast<unsigned long long>(diagnostic.hidReportCount),
-        static_cast<unsigned long>(diagnostic.lastHidReportMs),
-        static_cast<unsigned long>(now - diagnostic.lastHidReportMs),
+        static_cast<unsigned long long>(diagnostic.validHidReportCount),
+        static_cast<unsigned long>(diagnostic.lastValidHidReportMs),
+        static_cast<unsigned long>(lastHidAgeMs),
         w5500StatusText(), diagnosticLinkStatusText(),
         diagnostic.configuredIpText.c_str(),
+        diagnostic.ipAfterBeginText.c_str(),
         diagnostic.actualIpText.c_str(),
+        diagnostic.actualGatewayText.c_str(),
+        diagnostic.actualSubnetText.c_str(),
+        diagnostic.explicitConfigApplied ? "OK" : "SKIP",
+        diagnostic.lanConfigOk ? "OK" : "FAIL",
         udpSocketStatusText(),
         static_cast<unsigned long>(diagnostic.udpSentCount),
         static_cast<unsigned long>(diagnostic.udpFailedCount),
@@ -693,17 +777,21 @@ void logStatus(uint32_t now) {
 void setup() {
     diagnostic.resetReason = esp_reset_reason();
     resetControllerState();
+
+    Serial.begin(115200);
+    delay(100);
+    Serial.println("[BOOT] Serial ready");
+
     prepareSharedSpiPins();
+    Serial.println("[BOOT] Shared SPI pins safe");
 
     auto cfg = M5.config();
     // GPIO0 and GPIO13 are reused as LAN RESET/CS in this diagnostic.
     cfg.internal_spk = false;
     cfg.internal_mic = false;
     M5.begin(cfg);
+    Serial.println("[BOOT] M5.begin complete");
     prepareSharedSpiPins();
-
-    Serial.begin(115200);
-    delay(100);
 
     Serial.println("\n=== CoreS3 SE DualSense + LAN stack diagnostic ===");
     Serial.printf("Mode=%s Order=%s Reset=%s\n", diagnosticModeText(),

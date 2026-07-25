@@ -308,7 +308,7 @@ Link状態は画面描画およびUDP送信とは独立して250ms周期で再�
 
 ### 再現ビルド
 
-必要ライブラリは `M5Unified`、`USB Host Shield Library 2.0`、診断スケッチの場合のみ `M5-Ethernet@4.0.0` です。`build.ps1` は既存どおり `m5stack:esp32@3.3.7` を使用し、不足ライブラリをArduino CLIで導入します。`M5-Ethernet` が未導入の場合は4.0.0を導入しますが、異なるバージョンが既に存在する場合は共有ライブラリ環境を上書きせず、必要版・現在版・パスを表示してエラー終了します。
+必要ライブラリは `M5Unified`、`USB Host Shield Library 2.0`、LAN診断／Sender／Receiverの場合は `M5-Ethernet@4.0.0` です。`build.ps1` は既存どおり `m5stack:esp32@3.3.7` を使用し、不足ライブラリをArduino CLIで導入します。`M5-Ethernet` が未導入の場合は4.0.0を導入しますが、異なるバージョンが既に存在する場合は共有ライブラリ環境を上書きせず、必要版・現在版・パスを表示してエラー終了します。
 
 ```powershell
 # ビルドのみ
@@ -329,9 +329,13 @@ Link状態は画面描画およびUDP送信とは独立して250ms周期で再�
 
 ### 画面・シリアル表示
 
-画面と115200bpsのUSBシリアルへ、USB Host初期化、HIDパーサ取付結果、DualSense接続、VID/PID、HID受信回数、最終HID受信時刻と経過時間、W5500初期化、Ethernetリンク、設定IPと実IP、UDP socket状態、UDP成功／失敗／Link OFFスキップ回数、シーケンス、稼働時間、ESP32リセット理由、`input_valid` を表示します。UDPを有効にしない`LanInitializedNoRuntimeAccess`と`LanLinkStatusOnly`ではUDP socket状態を`SKIP`と表示します。画面にはさらにUDP総処理時間の直近値／最大値、実経過時間で正規化した`loop()`回数/秒と`Usb.Task()`呼出し回数/秒を表示します。
+画面と115200bpsのUSBシリアルへ、USB Host初期化、HIDパーサ取付結果、DualSense接続、VID/PID、HID受信回数、最終HID受信時刻と経過時間、W5500初期化、Ethernetリンク、設定IPと実IP、IP一致判定、UDP socket状態、UDP成功／失敗／Link OFFスキップ回数、シーケンス、稼働時間、ESP32リセット理由、`input_valid` を表示します。画面にはさらにUDP総処理時間の直近値／最大値、実経過時間で正規化した`loop()`回数/秒と`Usb.Task()`呼出し回数/秒を表示します。
 
-`UDP OK` はあくまでW5500へ送信できた回数であり、送信先Raspberry Piで受信できた回数ではありません。Pi到達の確認は別手段で行います。
+IP表示の`IP cfg`はスケッチで指定した固定IP、`IP act`はW5500から読み出した実IP、`IP check`は両者の一致判定です。`IP check=FAIL`の場合はUDP socketを開始しません。`IP act=0.0.0.0`は有効な固定IP設定がW5500から読み出せていない状態であり、`ping 0.0.0.0`はM5Stackとの疎通確認として扱いません。疎通確認対象は`192.168.50.10`です。
+
+UDP socket表示は、UDP無効、W5500未初期化、IP不一致などで`udp.begin()`を実施していない場合は`SKIP`、実施して成功した場合は`OK`、実施したが失敗した場合は`FAIL`です。
+
+`UDP OK` はあくまでW5500側の送信処理成功回数であり、送信先Raspberry Piでの受信を保証しません。到達確認にはRaspberry Pi側の受信ログを使用します。
 
 シリアルの定期状態行は`[STATUS]`で始まり、パーサ状態は`PARSER=OK`または`PARSER=FAIL`で表示されます。詳細な性能行は`[PERF]`で始まり、UDP各処理と総処理の直近値／最大値（マイクロ秒）、`LOOP_PER_SEC`、`USB_TASK_PER_SEC`を出力します。画面とログはキャッシュ済み診断値だけを参照し、表示処理から`Ethernet.*`または`udp.*`を呼びません。
 
@@ -424,6 +428,29 @@ CoreS3 SE積層診断スケッチの `cores3se` ビルドのみを実施しま�
 - `LanThenUsb` 順序での実機結果。
 - DualSense Wi-Fi TransmitterのArduino CLI待機問題と、Wi-Fi Receiverを含む既存スケッチの回帰ビルド。いずれも後続フェーズの対象です。
 - CoreS3 SE以外の実機動作（この診断スケッチはビルド対象外）。
+
+## CoreS3 SE 有線LAN Sender／Receiver
+
+製品用LANスケッチは次の2ファイルです。
+
+- `M5Stack-PS5CoRELANSender.ino`: `192.168.50.10`で待受けるTCP server
+- `M5Stack-PS5CoRELANReceiver.ino`: `192.168.50.20`からSenderへ接続するTCP client
+
+製品通信は既存Wireless実装をそのまま引き継ぎ、TCP port `12345`、20文字ASCII `BB,BB,DD,LX,LY,RX,RY`とLF区切りを使用します。診断スケッチのUDP port `50000`／24バイト`M5DS`パケットはネットワーク診断専用であり、製品プロトコルではありません。事実ベースの比較は `docs/lan-protocol-reuse-analysis.md` を参照してください。
+
+```powershell
+# LAN Sender
+.\build.ps1 -Board cores3se `
+  -SketchName M5Stack-PS5CoRELANSender.ino `
+  -SsChannel 2 -IntChannel 2 -SkipUpload
+
+# LAN Receiver
+.\build.ps1 -Board cores3se `
+  -SketchName M5Stack-PS5CoRELANReceiver.ino `
+  -SsChannel 2 -IntChannel 2 -SkipUpload
+```
+
+Windows試験ツールは `tools/lan_test/` にあります。`udp_receiver.py` は診断UDP、`core_protocol_receiver.py` はLANSender、`core_protocol_sender.py` は一時IPでビルドしたLANReceiverの単体試験に使用します。LANReceiverの最終既定IPはWindowsと同じ `192.168.50.20` なので、最終バイナリを現在の単体構成へ書き込んで試験しないでください。
 
 ## ライセンス
 
