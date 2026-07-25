@@ -2,7 +2,7 @@ param (
     [string]$Port = "",
     [ValidateSet("core", "core2", "cores3se")]
     [string]$Board = "core2",
-    [ValidateSet("M5Stack-SwitchController2CoREWirelessSender.ino", "M5Stack-PS5CoREWirelessSender.ino", "M5Stack-PS5CoREWirelessSender_Blue.ino", "M5Stack-PS5CoREWirelessReceiver.ino")]
+    [ValidateSet("M5Stack-SwitchController2CoREWirelessSender.ino", "M5Stack-PS5CoREWirelessSender.ino", "M5Stack-PS5CoREWirelessTransmitter.ino", "M5Stack-PS5CoREWirelessSender_Blue.ino", "M5Stack-PS5CoREWirelessReceiver.ino", "M5Stack-PS5CoRELanStackDiagnostic.ino")]
     [string]$SketchName = "M5Stack-SwitchController2CoREWirelessSender.ino",
     [ValidateRange(1, 3)]
     [int]$SsChannel = 1,
@@ -26,6 +26,7 @@ if (!$PSBoundParameters.ContainsKey('Board') -and $Config.Board) {
 # 3.3.7 is the currently installed m5stack:esp32 release in this environment.
 # The CoreS3 FQBN is also present in 3.2.5; keep the FQBN independent of this pin.
 $CoreVersion = "3.3.7"
+$M5EthernetVersion = "4.0.0"
 $BoardManagerUrl = "https://m5stack.oss-cn-shenzhen.aliyuncs.com/resource/arduino/package_m5stack_index.json"
 $BoardMap = @{
     core     = "m5stack:esp32:m5stack_core"
@@ -74,6 +75,9 @@ $SketchPath = Join-Path $PSScriptRoot $SketchName
 if (!(Test-Path $SketchPath)) {
     throw "Sketch file not found: $SketchPath"
 }
+if ($SketchName -eq "M5Stack-PS5CoRELanStackDiagnostic.ino" -and $Board -ne "cores3se") {
+    throw "M5Stack-PS5CoRELanStackDiagnostic.ino supports only -Board cores3se."
+}
 $SelectedIntGpio = $IntPinMap[$Board][$IntChannel - 1]
 $SelectedMisoGpio = $MisoPinMap[$Board]
 $SelectedSckGpio = $SpiPinMap[$Board][0]
@@ -91,6 +95,7 @@ $UserArduinoDir = if ($Config.ArduinoDir) { $Config.ArduinoDir } else { $Default
 
 $UserLibrariesDir = Join-Path $UserArduinoDir "libraries"
 $UsbHostShieldDir = Join-Path $UserLibrariesDir "USB_Host_Shield_Library_2.0"
+$M5EthernetDir = Join-Path $UserLibrariesDir "M5-Ethernet"
 
 Write-Output "--- M5Stack Build Script (Core v$CoreVersion / Board: $Board) ---"
 Write-Output "USB Module DIP: SS CH$SsChannel (GPIO$SelectedSsGpio), INT CH$IntChannel (GPIO$SelectedIntGpio)"
@@ -149,6 +154,57 @@ function Install-Library {
     }
 
     Write-Output "Library $LibraryName installed: $ExpectedDir"
+}
+
+function Install-PinnedLibrary {
+    param(
+        [string]$LibraryName,
+        [string]$Version,
+        [string]$ExpectedDir
+    )
+
+    $PropertiesFile = Join-Path $ExpectedDir "library.properties"
+    $InstalledVersion = if (Test-Path $PropertiesFile) {
+        $VersionLine = Get-Content -Path $PropertiesFile | Where-Object { $_ -match '^version=' } | Select-Object -First 1
+        if ($VersionLine) { $VersionLine.Substring("version=".Length).Trim() } else { "" }
+    } else {
+        ""
+    }
+
+    if (!(Test-Path $ExpectedDir)) {
+        Write-Output "Library $LibraryName is not installed. Installing $LibraryName@$Version..."
+        arduino-cli lib install "$LibraryName@$Version"
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to install $LibraryName@$Version."
+        }
+
+        if (!(Test-Path $PropertiesFile)) {
+            throw "$LibraryName@$Version was installed but library.properties was not found: $PropertiesFile"
+        }
+        $VersionLine = Get-Content -Path $PropertiesFile | Where-Object { $_ -match '^version=' } | Select-Object -First 1
+        $InstalledVersion = if ($VersionLine) { $VersionLine.Substring("version=".Length).Trim() } else { "" }
+        if ($InstalledVersion -ne $Version) {
+            throw "Installed $LibraryName version mismatch after installation. Required: $Version; Current: '$InstalledVersion'; Path: $ExpectedDir"
+        }
+    }
+    elseif ($InstalledVersion -eq $Version) {
+        Write-Output "Library $LibraryName@$Version found: $ExpectedDir"
+    }
+    else {
+        $ReportedVersion = if ($InstalledVersion) { $InstalledVersion } else { "unknown" }
+        throw "Library $LibraryName version mismatch. Required: $Version; Current: $ReportedVersion; Path: $ExpectedDir"
+    }
+
+    $LibraryListMatch = arduino-cli lib list | Select-String -SimpleMatch $LibraryName
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to list installed Arduino libraries after checking $LibraryName@$Version."
+    }
+    $LibraryListText = ($LibraryListMatch | ForEach-Object { $_.Line.Trim() }) -join "`n"
+    Write-Output "Arduino CLI installed library: $LibraryListText"
+    $ExpectedVersionPattern = [regex]::Escape($LibraryName) + '\s+' + [regex]::Escape($Version) + '(\s|$)'
+    if ($LibraryListText -notmatch $ExpectedVersionPattern) {
+        throw "Arduino CLI is not using the required $LibraryName@$Version. Reported: $LibraryListText"
+    }
 }
 
 function Update-UsbHostShieldLibrary {
@@ -317,7 +373,7 @@ MAKE_PIN(P14, 14); // INT (USB Module CH2)
 # 1. Core
 Install-M5StackCore -Version $CoreVersion
 
-# 2. Libraries (Documents/Arduino 配下を忁E��にする)
+# 2. Libraries (prefer the user's Documents/Arduino library directory)
 if (!(Test-Path $UserLibrariesDir)) {
     New-Item -ItemType Directory -Path $UserLibrariesDir | Out-Null
 }
@@ -325,6 +381,9 @@ if (!(Test-Path $UserLibrariesDir)) {
 Install-Library -LibraryName "M5Unified" -ExpectedDir (Join-Path $UserLibrariesDir "M5Unified")
 Install-Library -LibraryName "USB Host Shield Library 2.0" -ExpectedDir $UsbHostShieldDir
 Update-UsbHostShieldLibrary -LibDir $UsbHostShieldDir
+if ($SketchName -eq "M5Stack-PS5CoRELanStackDiagnostic.ino") {
+    Install-PinnedLibrary -LibraryName "M5-Ethernet" -Version $M5EthernetVersion -ExpectedDir $M5EthernetDir
+}
 
 # 3. Compile
 Write-Output "Compiling $SketchName..."
@@ -396,7 +455,8 @@ if ($ExportBinaries) {
     Write-Output ""
     Write-Output "--- Export Binaries ---"
     Write-Output "Output directory: $BuildOutputDir"
-    $ExportName = "SwitchSender_${Board}_SS-CH${SsChannel}_INT-CH${IntChannel}.bin"
+    $ExportPrefix = if ($SketchName -eq "M5Stack-PS5CoRELanStackDiagnostic.ino") { "PS5LanStackDiagnostic" } else { "SwitchSender" }
+    $ExportName = "${ExportPrefix}_${Board}_SS-CH${SsChannel}_INT-CH${IntChannel}.bin"
     # Arduino CLI retains the .ino suffix: <Sketch>.ino.bin. Restrict lookup
     # to this FQBN output directory so a stale binary from another board is not used.
     $SketchBin = Join-Path $BuildOutputDir "$SketchName.bin"
