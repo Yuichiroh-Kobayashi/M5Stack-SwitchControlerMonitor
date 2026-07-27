@@ -1,406 +1,483 @@
 #include <M5Unified.h>
 #include <SPI.h>
 #include <M5_Ethernet.h>
+#include <EthernetUdp.h>
 #include <esp_system.h>
+#include "src/core_protocol/CoreProtocol.h"
 
 #if !defined(BUILD_TARGET_CORES3SE)
-#error "M5Stack-PS5CoRELANReceiver.ino supports only the cores3se build target."
+#error "M5Stack-PS5CoRELANReceiver.ino supports only cores3se."
 #endif
-
 #ifndef PIN_SPI_SCK
 #define PIN_SPI_SCK 36
-#endif
-#ifndef PIN_SPI_MOSI
 #define PIN_SPI_MOSI 37
-#endif
-#ifndef PIN_SPI_MISO
 #define PIN_SPI_MISO 35
 #endif
-#ifndef USB_HOST_SHIELD_SS_GPIO
-#define USB_HOST_SHIELD_SS_GPIO 1
+#ifndef SERIAL2_RX_PIN
+#define SERIAL2_RX_PIN 18
+#define SERIAL2_TX_PIN 17
 #endif
 
-namespace LanReceiverConfig {
-
-constexpr uint8_t kLanCsPin = 13;
-constexpr uint8_t kLanIntPin = 10;
-constexpr uint8_t kLanResetPin = 0;
-constexpr uint32_t kLinkPollIntervalMs = 250;
-constexpr uint32_t kConnectRetryIntervalMs = 1000;
-constexpr uint16_t kConnectTimeoutMs = 50;
-constexpr uint32_t kReceiveTimeoutMs = 100;
-constexpr uint32_t kDisplayIntervalMs = 5000;
-constexpr uint32_t kSerialIntervalMs = 1000;
-constexpr uint16_t kTcpPort = 12345;
-
-// Final product defaults. The temporary single-device test changes these two
-// constants to .10/.20 for its build, then restores them before final build.
-const IPAddress kLocalIp(192, 168, 50, 20);
-const IPAddress kSenderIp(192, 168, 50, 10);
-const IPAddress kDns(192, 168, 50, 1);
-const IPAddress kGateway(192, 168, 50, 1);
-const IPAddress kSubnet(255, 255, 255, 0);
-uint8_t kMacAddress[6] = {0x02, 0x4D, 0x35, 0x53, 0x45, 0x21};
-
-}  // namespace LanReceiverConfig
-
-struct ReceiverState {
-    bool w5500InitOk = false;
-    bool explicitConfigApplied = false;
-    bool lanConfigOk = false;
-    EthernetLinkStatus linkStatus = Unknown;
-    String ipAfterBeginText = "N/A";
-    String actualIpText = "N/A";
-    String gatewayText = "N/A";
-    String subnetText = "N/A";
-    bool tcpConnected = false;
-    uint32_t connectCount = 0;
-    uint32_t connectFailCount = 0;
-    uint32_t rxCount = 0;
-    uint32_t invalidCount = 0;
-    uint32_t overflowCount = 0;
-    uint32_t timeoutCount = 0;
-    uint32_t droppedSequence = 0;  // N/A for the reused protocol; remains zero.
-    uint32_t lastRxMs = 0;
-    bool hasValidRecord = false;
-    bool inputValid = false;
-    bool outputNeutral = true;
-    uint32_t connectLastUs = 0;
-    uint32_t connectMaxUs = 0;
-    esp_reset_reason_t resetReason = ESP_RST_UNKNOWN;
-};
-
-ReceiverState receiverState;
-EthernetClient tcpClient;
-char lineBuffer[64] = {0};
-size_t lineLength = 0;
-char outputRecord[21] = "00,00,00,80,80,80,80";
-uint32_t lastLinkPollMs = 0;
-uint32_t lastConnectAttemptMs = 0;
-uint32_t lastDisplayMs = 0;
-uint32_t lastSerialMs = 0;
-
-static_assert(LanReceiverConfig::kLanCsPin != USB_HOST_SHIELD_SS_GPIO,
-              "LAN CS conflicts with USB SS");
-
-inline void deselectExternalSpiDevices() {
-    digitalWrite(USB_HOST_SHIELD_SS_GPIO, HIGH);
-    digitalWrite(LanReceiverConfig::kLanCsPin, HIGH);
+namespace Config {
+constexpr uint8_t kLanCs=13, kLanInt=10, kLanReset=0;
+constexpr uint16_t kPort=50001;
+constexpr uint32_t kPeriodMs=20, kStatusPhaseMs=10, kTimeoutMs=100;
+constexpr uint32_t kLinkPollMs=250, kDrawMs=100, kBatteryMs=1000,
+                   kSerialMs=1000;
+const IPAddress kLocalIp(192,168,50,20), kPeerIp(192,168,50,10);
+const IPAddress kDns(192,168,50,1), kGateway(192,168,50,1),
+                kSubnet(255,255,255,0);
+uint8_t kMac[6]={0x02,0x4D,0x35,0x52,0x45,0x20};
 }
 
-void prepareLanPins() {
-    pinMode(USB_HOST_SHIELD_SS_GPIO, OUTPUT);
-    pinMode(LanReceiverConfig::kLanCsPin, OUTPUT);
-    deselectExternalSpiDevices();
-    pinMode(LanReceiverConfig::kLanResetPin, OUTPUT);
-    digitalWrite(LanReceiverConfig::kLanResetPin, LOW);
-    pinMode(LanReceiverConfig::kLanIntPin, INPUT_PULLUP);
-}
+static_assert(Config::kLanCs != Config::kLanReset, "LAN CS/reset conflict");
+static_assert(Config::kLanCs != PIN_SPI_SCK && Config::kLanCs != PIN_SPI_MOSI &&
+              Config::kLanCs != PIN_SPI_MISO, "LAN CS/SPI conflict");
+static_assert(SERIAL2_RX_PIN == 18 && SERIAL2_TX_PIN == 17, "Port C pin mismatch");
+
+using namespace core_protocol;
+EthernetUDP udp;
+constexpr int16_t UI_TOP_Y=15;
+
+struct ReceivedPadState {
+  bool btnA=false, btnB=false, btnX=false, btnY=false;
+  bool btnL=false, btnR=false, btnZL=false, btnZR=false;
+  bool btnMinus=false, btnPlus=false, btnHome=false, btnCapture=false;
+  bool btnLStick=false, btnRStick=false;
+  uint8_t dpad=8, lX=128, lY=128, rX=128, rY=128;
+} rxPadState;
+
+struct State {
+  bool selfTestOk=false, w5500=false, lanCfg=false, udpReady=false;
+  EthernetLinkStatus link=Unknown;
+  IPAddress actualIp;
+  bool controlValid=false, controlTimeout=true, haveControl=false;
+  uint16_t lastControlSeq=0, statusSeq=0;
+  uint32_t lastControlMs=0, controlRx=0, controlCrcFail=0,
+           controlInvalid=0, controlSeqGap=0, duplicate=0, stale=0,
+           controlRxBacklog=0;
+  uint32_t statusTx=0, statusTxFail=0, statusScheduleSkip=0;
+  uint32_t uartTx=0, uartRxBytes=0, uartValidFrames=0, uartCrcFail=0;
+  uint32_t loopCount=0, loopsPerSec=0, controlRxPerSec=0, statusTxPerSec=0,
+           lastLoopSnapshot=0, lastControlRxSnapshot=0, lastStatusTxSnapshot=0;
+  uint32_t maxLanOperationUs=0, maxLoopDurationUs=0;
+  int battery=-1;
+  esp_reset_reason_t resetReason=ESP_RST_UNKNOWN;
+} state;
+
+uint32_t lastLinkMs=0, lastDrawMs=0, lastBatteryMs=0, lastSerialMs=0,
+         lastRateMs=0;
+uint32_t nextStatusMs=Config::kStatusPhaseMs;
+uint8_t uartBuffer[kFrameSize];
+uint8_t uartLength=0;
+uint8_t drawPhase=0;
 
 const char* linkText() {
-    if (receiverState.linkStatus == LinkON) return "ON";
-    if (receiverState.linkStatus == LinkOFF) return "OFF";
-    return "UNKNOWN";
+  return state.link==LinkON ? "ON" : state.link==LinkOFF ? "OFF" : "UNKNOWN";
 }
 
-const char* resetReasonText(esp_reset_reason_t reason) {
-    switch (reason) {
-        case ESP_RST_POWERON: return "POWERON";
-        case ESP_RST_SW: return "SOFTWARE";
-        case ESP_RST_PANIC: return "PANIC";
-        case ESP_RST_INT_WDT: return "INT_WDT";
-        case ESP_RST_TASK_WDT: return "TASK_WDT";
-        case ESP_RST_WDT: return "OTHER_WDT";
-        case ESP_RST_BROWNOUT: return "BROWNOUT";
-        case ESP_RST_USB: return "USB";
-        default: return "OTHER";
-    }
+const char* resetText() {
+  switch (state.resetReason) {
+    case ESP_RST_PANIC:return "PANIC";
+    case ESP_RST_INT_WDT:case ESP_RST_TASK_WDT:case ESP_RST_WDT:return "WDT";
+    case ESP_RST_BROWNOUT:return "BROWNOUT";
+    case ESP_RST_SW:return "SOFTWARE";
+    case ESP_RST_USB:return "USB";
+    case ESP_RST_POWERON:return "POWERON";
+    default:return "OTHER";
+  }
 }
 
-int hexNibble(char value) {
-    if (value >= '0' && value <= '9') return value - '0';
-    if (value >= 'A' && value <= 'F') return value - 'A' + 10;
-    if (value >= 'a' && value <= 'f') return value - 'a' + 10;
-    return -1;
+void neutralize() { rxPadState=ReceivedPadState{}; }
+
+void applyControl(const ControlPayload& payload) {
+  const uint16_t buttons=payload.buttons;
+  rxPadState.btnA=buttons&0x0001; rxPadState.btnB=buttons&0x0002;
+  rxPadState.btnX=buttons&0x0004; rxPadState.btnY=buttons&0x0008;
+  rxPadState.btnL=buttons&0x0010; rxPadState.btnR=buttons&0x0020;
+  rxPadState.btnZL=buttons&0x0040; rxPadState.btnZR=buttons&0x0080;
+  rxPadState.btnMinus=buttons&0x0100; rxPadState.btnPlus=buttons&0x0200;
+  rxPadState.btnHome=buttons&0x0400; rxPadState.btnCapture=buttons&0x0800;
+  rxPadState.btnLStick=buttons&0x1000; rxPadState.btnRStick=buttons&0x2000;
+  rxPadState.dpad=payload.dpad;
+  rxPadState.lX=payload.leftX; rxPadState.lY=payload.leftY;
+  rxPadState.rX=payload.rightX; rxPadState.rY=payload.rightY;
 }
 
-bool parseCanonicalRecord(const char* line, uint8_t values[7]) {
-    if (strlen(line) != 20) return false;
-    for (uint8_t field = 0; field < 7; ++field) {
-        const size_t offset = field * 3;
-        const int high = hexNibble(line[offset]);
-        const int low = hexNibble(line[offset + 1]);
-        if (high < 0 || low < 0) return false;
-        values[field] = static_cast<uint8_t>((high << 4) | low);
-        if (field < 6 && line[offset + 2] != ',') return false;
-    }
-    // The reused Wireless sender only emits 0 (neutral) or hat+1 (1..8).
-    return values[2] <= 8;
+inline void prepareForLanAccess() { digitalWrite(Config::kLanCs, HIGH); }
+inline void releaseExternalSpiDevices() { digitalWrite(Config::kLanCs, HIGH); }
+
+void prepareExternalPins() {
+  pinMode(Config::kLanReset, OUTPUT);
+  digitalWrite(Config::kLanReset, LOW);
+  pinMode(Config::kLanCs, OUTPUT);
+  digitalWrite(Config::kLanCs, HIGH);
+  pinMode(Config::kLanInt, INPUT_PULLUP);
 }
 
-void writeSerial2Record(const char* record) {
-    Serial2.print(record);
-    Serial2.print("\r\n");
-}
-
-void neutralizeOutput(const char* reason, bool forceWrite = false) {
-    receiverState.inputValid = false;
-    receiverState.hasValidRecord = false;
-    strcpy(outputRecord, "00,00,00,80,80,80,80");
-    if (!receiverState.outputNeutral || forceWrite) {
-        writeSerial2Record(outputRecord);
-        Serial.printf("[SAFE] OUTPUT=NEUTRAL REASON=%s\n", reason);
-    }
-    receiverState.outputNeutral = true;
-}
-
-void acceptRecord(const char* line, uint32_t now) {
-    uint8_t values[7];
-    if (!parseCanonicalRecord(line, values)) {
-        ++receiverState.invalidCount;
-        Serial.printf("[RX] INVALID LENGTH=%u DATA=%s\n",
-                      static_cast<unsigned>(strlen(line)), line);
-        return;
-    }
-    memcpy(outputRecord, line, 21);
-    writeSerial2Record(outputRecord);
-    ++receiverState.rxCount;
-    receiverState.lastRxMs = now;
-    receiverState.hasValidRecord = true;
-    receiverState.inputValid = true;
-    receiverState.outputNeutral =
-        values[0] == 0 && values[1] == 0 && values[2] == 0 &&
-        values[3] == 0x80 && values[4] == 0x80 &&
-        values[5] == 0x80 && values[6] == 0x80;
-}
-
-void processTcpInput(uint32_t now) {
-    uint16_t processed = 0;
-    while (tcpClient.connected() && tcpClient.available() && processed < 256) {
-        ++processed;
-        const char value = static_cast<char>(tcpClient.read());
-        if (value == '\r') continue;
-        if (value == '\n') {
-            if (lineLength > 0) {
-                lineBuffer[lineLength] = '\0';
-                acceptRecord(lineBuffer, now);
-            }
-            lineLength = 0;
-            continue;
-        }
-        if (lineLength < sizeof(lineBuffer) - 1) {
-            lineBuffer[lineLength++] = value;
-        } else {
-            lineLength = 0;
-            ++receiverState.invalidCount;
-            ++receiverState.overflowCount;
-        }
-    }
+void updateLanOperationDuration(uint32_t startUs) {
+  const uint32_t elapsedUs=micros()-startUs;
+  if (elapsedUs>state.maxLanOperationUs) state.maxLanOperationUs=elapsedUs;
 }
 
 void initializeLan() {
-    deselectExternalSpiDevices();
-    digitalWrite(LanReceiverConfig::kLanResetPin, LOW);
-    delay(50);
-    digitalWrite(LanReceiverConfig::kLanResetPin, HIGH);
-    delay(50);
-    SPI.begin(PIN_SPI_SCK, PIN_SPI_MISO, PIN_SPI_MOSI, -1);
-    Ethernet.init(LanReceiverConfig::kLanCsPin);
-    Ethernet.begin(LanReceiverConfig::kMacAddress, LanReceiverConfig::kLocalIp,
-                   LanReceiverConfig::kDns, LanReceiverConfig::kGateway,
-                   LanReceiverConfig::kSubnet);
-    receiverState.w5500InitOk = Ethernet.hardwareStatus() == EthernetW5500;
-    if (!receiverState.w5500InitOk) {
-        Serial.println("[INIT] W5500=FAIL LAN_CFG=FAIL");
-        return;
-    }
-    receiverState.ipAfterBeginText = Ethernet.localIP().toString();
-    Ethernet.setMACAddress(LanReceiverConfig::kMacAddress);
-    Ethernet.setLocalIP(LanReceiverConfig::kLocalIp);
-    Ethernet.setGatewayIP(LanReceiverConfig::kGateway);
-    Ethernet.setSubnetMask(LanReceiverConfig::kSubnet);
-    Ethernet.setDnsServerIP(LanReceiverConfig::kDns);
-    receiverState.explicitConfigApplied = true;
-    const IPAddress actualIp = Ethernet.localIP();
-    const IPAddress actualGateway = Ethernet.gatewayIP();
-    const IPAddress actualSubnet = Ethernet.subnetMask();
-    receiverState.actualIpText = actualIp.toString();
-    receiverState.gatewayText = actualGateway.toString();
-    receiverState.subnetText = actualSubnet.toString();
-    receiverState.lanConfigOk =
-        actualIp == LanReceiverConfig::kLocalIp &&
-        actualGateway == LanReceiverConfig::kGateway &&
-        actualSubnet == LanReceiverConfig::kSubnet;
-    Ethernet.setRetransmissionTimeout(20);
-    Ethernet.setRetransmissionCount(1);
-    Serial.printf(
-        "[INIT] W5500=OK IP_AFTER_BEGIN=%s IP_ACT=%s GATEWAY_ACT=%s "
-        "SUBNET_ACT=%s EXPLICIT_CFG=%s LAN_CFG=%s SENDER=%s:%u\n",
-        receiverState.ipAfterBeginText.c_str(), receiverState.actualIpText.c_str(),
-        receiverState.gatewayText.c_str(), receiverState.subnetText.c_str(),
-        receiverState.explicitConfigApplied ? "OK" : "SKIP",
-        receiverState.lanConfigOk ? "OK" : "FAIL",
-        LanReceiverConfig::kSenderIp.toString().c_str(),
-        static_cast<unsigned>(LanReceiverConfig::kTcpPort));
+  digitalWrite(Config::kLanReset, LOW); delay(50);
+  digitalWrite(Config::kLanReset, HIGH); delay(50);
+  SPI.begin(PIN_SPI_SCK, PIN_SPI_MISO, PIN_SPI_MOSI, -1);
+  prepareForLanAccess();
+  const uint32_t startUs=micros();
+  Ethernet.init(Config::kLanCs);
+  Ethernet.begin(Config::kMac,Config::kLocalIp,Config::kDns,
+                 Config::kGateway,Config::kSubnet);
+  state.w5500=Ethernet.hardwareStatus()==EthernetW5500;
+  if (state.w5500) {
+    Ethernet.setMACAddress(Config::kMac);
+    Ethernet.setLocalIP(Config::kLocalIp);
+    Ethernet.setGatewayIP(Config::kGateway);
+    Ethernet.setSubnetMask(Config::kSubnet);
+    Ethernet.setDnsServerIP(Config::kDns);
+    state.actualIp=Ethernet.localIP();
+    state.lanCfg=state.actualIp==Config::kLocalIp &&
+                 Ethernet.gatewayIP()==Config::kGateway &&
+                 Ethernet.subnetMask()==Config::kSubnet;
+    if (state.lanCfg) state.udpReady=udp.begin(Config::kPort)==1;
+  }
+  releaseExternalSpiDevices();
+  updateLanOperationDuration(startUs);
 }
 
-void disconnectTcp(uint32_t now, const char* reason) {
-    if (tcpClient) tcpClient.stop();
-    tcpClient = EthernetClient();
-    tcpClient.setConnectionTimeout(LanReceiverConfig::kConnectTimeoutMs);
-    receiverState.tcpConnected = false;
-    lineLength = 0;
-    neutralizeOutput(reason);
-    lastConnectAttemptMs = now;
+void countDecodeFailure(DecodeResult result) {
+  if (result==DecodeResult::BadCrc) ++state.controlCrcFail;
+  else ++state.controlInvalid;
 }
 
-void connectIfNeeded(uint32_t now) {
-    if (!receiverState.lanConfigOk || receiverState.linkStatus != LinkON) {
-        if (receiverState.tcpConnected) disconnectTcp(now, "LINK_OFF");
-        return;
+void processControlFrame(uint32_t now, int packetSize, int read,
+                         const IPAddress& remoteIp, uint16_t remotePort,
+                         const uint8_t* frame) {
+  if (packetSize!=static_cast<int>(kFrameSize) ||
+      read!=static_cast<int>(kFrameSize) || remoteIp!=Config::kPeerIp ||
+      remotePort!=Config::kPort) {
+    ++state.controlInvalid;
+    return;
+  }
+  FrameHeader header{};
+  ControlPayload payload{};
+  const DecodeResult result=decodeControl(frame,kFrameSize,header,payload);
+  if (result!=DecodeResult::Ok) { countDecodeFailure(result); return; }
+  uint16_t missing=0;
+  const SequenceRelation relation=classifySequence(
+      state.haveControl,state.lastControlSeq,header.sequence,missing);
+  if (relation==SequenceRelation::Duplicate) { ++state.duplicate; return; }
+  if (relation==SequenceRelation::StaleOrReverse) { ++state.stale; return; }
+  if (relation==SequenceRelation::ForwardGap) state.controlSeqGap+=missing;
+  state.haveControl=true;
+  state.lastControlSeq=header.sequence;
+  state.lastControlMs=now;
+  ++state.controlRx;
+  state.controlValid=(payload.controlFlags&kControlInputValid)!=0;
+  state.controlTimeout=false;
+  if (state.controlValid) applyControl(payload); else neutralize();
+  Serial2.write(frame,kFrameSize);
+  ++state.uartTx;
+}
+
+void receiveAtMostTwoControlPackets(uint32_t now) {
+  for (uint8_t count=0; count<2; ++count) {
+    prepareForLanAccess();
+    const uint32_t startUs=micros();
+    const int packetSize=udp.parsePacket();
+    if (packetSize<=0) {
+      releaseExternalSpiDevices();
+      updateLanOperationDuration(startUs);
+      return;
     }
-    if (receiverState.tcpConnected) {
-        if (!tcpClient.connected()) disconnectTcp(now, "TCP_DISCONNECT");
-        return;
+    uint8_t frame[kFrameSize];
+    const int read=udp.read(frame,sizeof(frame));
+    const IPAddress remoteIp=udp.remoteIP();
+    const uint16_t remotePort=udp.remotePort();
+    releaseExternalSpiDevices();
+    updateLanOperationDuration(startUs);
+    if (count>0) ++state.controlRxBacklog;
+    processControlFrame(now,packetSize,read,remoteIp,remotePort,frame);
+  }
+}
+
+void serviceTimeout(uint32_t now) {
+  if (!state.haveControl || now-state.lastControlMs>=Config::kTimeoutMs) {
+    state.controlValid=false;
+    state.controlTimeout=true;
+    state.haveControl=false;
+    neutralize();
+  }
+}
+
+void sendStatus(uint32_t now) {
+  StatusPayload payload{};
+  payload.statusFlags=kStatusReceiverReady|kStatusUartTxEnabled;
+  if (state.controlValid) payload.statusFlags|=kStatusControlValid;
+  if (state.controlTimeout) payload.statusFlags|=kStatusControlTimeout;
+  if (state.link==LinkON) payload.statusFlags|=kStatusLanLinkOn;
+  if (state.controlInvalid||state.controlCrcFail) payload.statusFlags|=kStatusProtocolError;
+  if (state.controlSeqGap) payload.statusFlags|=kStatusSequenceGap;
+  if (state.battery>=0) payload.statusFlags|=kStatusBatteryValid;
+  payload.lastControlSequence=state.lastControlSeq;
+  payload.controlAgeMs=state.haveControl
+      ? static_cast<uint16_t>(min<uint32_t>(now-state.lastControlMs,65535))
+      : 65535;
+  payload.sequenceGapCount=static_cast<uint16_t>(min<uint32_t>(state.controlSeqGap,65535));
+  payload.invalidFrameCount=static_cast<uint16_t>(min<uint32_t>(
+      state.controlInvalid+state.controlCrcFail,65535));
+  payload.receiverBatteryPercent=state.battery>=0 ? state.battery : 255;
+  payload.uartState=1;
+  uint8_t frame[kFrameSize];
+  encodeStatus(frame,state.statusSeq,now,payload);
+  bool sent=false;
+  if (state.link==LinkON && state.udpReady) {
+    prepareForLanAccess();
+    const uint32_t startUs=micros();
+    sent=udp.beginPacket(Config::kPeerIp,Config::kPort)==1 &&
+         udp.write(frame,sizeof(frame))==sizeof(frame) && udp.endPacket()==1;
+    releaseExternalSpiDevices();
+    updateLanOperationDuration(startUs);
+  }
+  if (sent) { ++state.statusTx; ++state.statusSeq; }
+  else ++state.statusTxFail;
+}
+
+void sendAtMostOneStatusFrame(uint32_t now) {
+  if (static_cast<int32_t>(now-nextStatusMs)<0) return;
+  sendStatus(now);
+  uint32_t advanced=0;
+  do { nextStatusMs+=Config::kPeriodMs; ++advanced; }
+  while (static_cast<int32_t>(now-nextStatusMs)>=0);
+  if (advanced>1) state.statusScheduleSkip+=advanced-1;
+}
+
+void serviceUartParser() {
+  while (Serial2.available()) {
+    const uint8_t value=Serial2.read();
+    ++state.uartRxBytes;
+    if (uartLength==0 && value!=kMagic0) continue;
+    if (uartLength==1 && value!=kMagic1) {
+      uartLength=value==kMagic0 ? 1 : 0;
+      continue;
     }
-    if (now - lastConnectAttemptMs <
-        LanReceiverConfig::kConnectRetryIntervalMs) {
-        return;
-    }
-    lastConnectAttemptMs = now;
-    deselectExternalSpiDevices();
-    tcpClient.setConnectionTimeout(LanReceiverConfig::kConnectTimeoutMs);
-    const uint32_t startUs = micros();
-    const int connected =
-        tcpClient.connect(LanReceiverConfig::kSenderIp,
-                          LanReceiverConfig::kTcpPort);
-    const uint32_t elapsedUs = micros() - startUs;
-    receiverState.connectLastUs = elapsedUs;
-    receiverState.connectMaxUs = max(receiverState.connectMaxUs, elapsedUs);
-    if (connected == 1) {
-        receiverState.tcpConnected = true;
-        ++receiverState.connectCount;
-        lineLength = 0;
-        Serial.printf("[TCP] CONNECTED=%s:%u\n",
-                      LanReceiverConfig::kSenderIp.toString().c_str(),
-                      static_cast<unsigned>(LanReceiverConfig::kTcpPort));
+    uartBuffer[uartLength++]=value;
+    if (uartLength<kFrameSize) continue;
+    FrameHeader header{};
+    StatusPayload payload{};
+    const DecodeResult result=decodeStatus(uartBuffer,sizeof(uartBuffer),header,payload);
+    if (result==DecodeResult::Ok) {
+      ++state.uartValidFrames;
+      uartLength=0;
     } else {
-        tcpClient.stop();
-        ++receiverState.connectFailCount;
+      if (result==DecodeResult::BadCrc) ++state.uartCrcFail;
+      memmove(uartBuffer,uartBuffer+1,kFrameSize-1);
+      uartLength=kFrameSize-1;
+      while (uartLength && uartBuffer[0]!=kMagic0) {
+        memmove(uartBuffer,uartBuffer+1,--uartLength);
+      }
     }
+  }
 }
 
-void updateSafety(uint32_t now) {
-    if (receiverState.inputValid &&
-        now - receiverState.lastRxMs > LanReceiverConfig::kReceiveTimeoutMs) {
-        ++receiverState.timeoutCount;
-        neutralizeOutput("RX_TIMEOUT");
-    }
+void updateBattery() {
+  const int value=M5.Power.getBatteryLevel();
+  state.battery=value>=0 && value<=100 ? value : -1;
+}
+
+void pollLink() {
+  prepareForLanAccess();
+  const uint32_t startUs=micros();
+  state.link=Ethernet.linkStatus();
+  releaseExternalSpiDevices();
+  updateLanOperationDuration(startUs);
+}
+
+void updateRates(uint32_t now) {
+  if (now-lastRateMs<1000) return;
+  const uint32_t elapsed=now-lastRateMs;
+  state.loopsPerSec=(state.loopCount-state.lastLoopSnapshot)*1000ULL/elapsed;
+  state.controlRxPerSec=(state.controlRx-state.lastControlRxSnapshot)*1000ULL/elapsed;
+  state.statusTxPerSec=(state.statusTx-state.lastStatusTxSnapshot)*1000ULL/elapsed;
+  state.lastLoopSnapshot=state.loopCount;
+  state.lastControlRxSnapshot=state.controlRx;
+  state.lastStatusTxSnapshot=state.statusTx;
+  lastRateMs=now;
+}
+
+const char* controllerStateText() {
+  if (state.controlValid) return "OK";
+  if (state.controlTimeout) return state.link==LinkON ? "TIMEOUT" : "DISCONNECTED";
+  return "NEUTRAL";
+}
+
+const char* peerStateText() {
+  if (state.link!=LinkON) return "DISCONNECTED";
+  return state.haveControl && !state.controlTimeout ? "OK" : "TIMEOUT";
+}
+
+void formatBattery(char* text,size_t length) {
+  if (state.battery>=0) snprintf(text,length,"BAT:%3d%%",state.battery);
+  else snprintf(text,length,"BAT: --%%");
+}
+
+template<typename DisplayType>
+void drawReceiverInfoTo(DisplayType& target,int16_t yOffset,uint32_t now,
+                        uint8_t phase) {
+  char batteryText[10];
+  formatBattery(batteryText,sizeof(batteryText));
+  const char* dpadText="CENTER";
+  int dx=0,dy=0;
+  switch(rxPadState.dpad) {
+    case 0:dpadText="UP";dy=-1;break;case 1:dpadText="UP-R";dx=1;dy=-1;break;
+    case 2:dpadText="RIGHT";dx=1;break;case 3:dpadText="DW-R";dx=1;dy=1;break;
+    case 4:dpadText="DOWN";dy=1;break;case 5:dpadText="DW-L";dx=-1;dy=1;break;
+    case 6:dpadText="LEFT";dx=-1;break;case 7:dpadText="UP-L";dx=-1;dy=-1;break;
+  }
+  target.setTextSize(1);
+  target.setTextColor(WHITE,BLACK);
+  if (phase==0) {
+    target.setCursor(0,UI_TOP_Y-yOffset);
+    target.printf("LAN:%s UDP:%s %s",linkText(),state.udpReady?"OK":"NG",batteryText);
+    target.setCursor(0,30-yOffset);
+    target.printf("CTRL:%s PEER:%s",controllerStateText(),peerStateText());
+    return;
+  }
+  if (phase==1) {
+    target.setCursor(0,50-yOffset);
+    target.printf("A:%d B:%d X:%d Y:%d\n",rxPadState.btnA,rxPadState.btnB,
+                  rxPadState.btnX,rxPadState.btnY);
+    target.printf("L:%d R:%d ZL:%d ZR:%d\n",rxPadState.btnL,rxPadState.btnR,
+                  rxPadState.btnZL,rxPadState.btnZR);
+    target.printf("-:%d +:%d H:%d C:%d\n",rxPadState.btnMinus,rxPadState.btnPlus,
+                  rxPadState.btnHome,rxPadState.btnCapture);
+    target.printf("LS:%d RS:%d DP:%s\n",rxPadState.btnLStick,rxPadState.btnRStick,dpadText);
+    return;
+  }
+  target.setCursor(0,100-yOffset);
+  target.printf("L Stick: X=%3d Y=%3d\n",rxPadState.lX,rxPadState.lY);
+  target.printf("R Stick: X=%3d Y=%3d\n",rxPadState.rX,rxPadState.rY);
+  int cx=60,cy=160-yOffset,r=25;
+  target.drawRect(cx-r,cy-r,r*2,r*2,DARKGREY);
+  target.fillCircle(cx+map(rxPadState.lX,0,255,-r,r),
+                    cy+map(rxPadState.lY,0,255,-r,r),4,GREEN);
+  target.setCursor(cx-10,cy+r+5);target.print("LS");
+  cx=160;
+  target.drawRect(cx-r,cy-r,r*2,r*2,DARKGREY);
+  target.fillCircle(cx+map(rxPadState.rX,0,255,-r,r),
+                    cy+map(rxPadState.rY,0,255,-r,r),4,GREEN);
+  target.setCursor(cx-10,cy+r+5);target.print("RS");
+  cx=260;
+  target.drawRect(cx-r,cy-r,r*2,r*2,DARKGREY);
+  target.drawLine(cx-r,cy,cx+r,cy,DARKGREY);
+  target.drawLine(cx,cy-r,cx,cy+r,DARKGREY);
+  if(rxPadState.dpad!=8)target.fillCircle(cx+dx*15,cy+dy*15,6,YELLOW);
+  else target.fillCircle(cx,cy,4,DARKGREY);
+  target.setCursor(cx-15,cy+r+5);target.print("DPAD");
+  target.setCursor(0,215-yOffset);
+  target.setTextColor(CYAN,BLACK);
+  if(state.haveControl) {
+    target.printf("TX:%lu RX:%lu AGE:%lums",(unsigned long)state.statusTx,
+                  (unsigned long)state.controlRx,
+                  (unsigned long)(now-state.lastControlMs));
+  } else {
+    target.printf("TX:%lu RX:%lu AGE:--ms",(unsigned long)state.statusTx,
+                  (unsigned long)state.controlRx);
+  }
+  target.setTextColor(WHITE,BLACK);
 }
 
 void drawStatus(uint32_t now) {
-    deselectExternalSpiDevices();
-    M5.Display.fillScreen(BLACK);
-    M5.Display.setCursor(0, 0);
-    M5.Display.setTextSize(1);
-    M5.Display.setTextColor(WHITE, BLACK);
-    M5.Display.println("CoreS3 SE PS5 CoRE LAN Receiver");
-    M5.Display.printf("LAN:%s Link:%s\n",
-                      receiverState.lanConfigOk ? "OK" : "FAIL", linkText());
-    M5.Display.printf("Local:%s\n", receiverState.actualIpText.c_str());
-    M5.Display.printf("Sender:%s:%u\n",
-                      LanReceiverConfig::kSenderIp.toString().c_str(),
-                      static_cast<unsigned>(LanReceiverConfig::kTcpPort));
-    M5.Display.printf("TCP:%s RX:%lu Invalid:%lu\n",
-                      receiverState.tcpConnected ? "ON" : "OFF",
-                      static_cast<unsigned long>(receiverState.rxCount),
-                      static_cast<unsigned long>(receiverState.invalidCount));
-    M5.Display.printf("Dropped sequence:N/A (%lu)\n",
-                      static_cast<unsigned long>(receiverState.droppedSequence));
-    M5.Display.printf("Last RX age:%lu ms\n",
-                      static_cast<unsigned long>(
-                          receiverState.hasValidRecord
-                              ? now - receiverState.lastRxMs
-                              : 0));
-    M5.Display.printf("Input valid:%u Output:%s\n",
-                      receiverState.inputValid ? 1 : 0,
-                      receiverState.inputValid ? "ACTIVE" : "NEUTRAL");
-    M5.Display.printf("Data:%s\n", outputRecord);
-    M5.Display.printf("Uptime:%lu ms\n", static_cast<unsigned long>(now));
+  if (drawPhase==0) {
+    M5.Display.fillRect(0,15,320,27,BLACK);
+  } else if (drawPhase==1) {
+    M5.Display.fillRect(0,50,230,64,BLACK);
+  } else {
+    M5.Display.fillRect(0,100,230,22,BLACK);
+    M5.Display.fillRect(34,134,53,63,BLACK);
+    M5.Display.fillRect(134,134,53,63,BLACK);
+    M5.Display.fillRect(234,134,53,63,BLACK);
+    M5.Display.fillRect(0,212,320,16,BLACK);
+  }
+  drawReceiverInfoTo(M5.Display,0,now,drawPhase);
+  drawPhase=(drawPhase+1)%3;
 }
 
 void logStatus(uint32_t now) {
-    Serial.printf(
-        "[STATUS] W5500=%s LAN_CFG=%s LINK=%s LOCAL_IP=%s SENDER_IP=%s "
-        "PORT=%u TCP=%s CONNECT=%lu CONNECT_FAIL=%lu CONNECT_US_LAST=%lu "
-        "CONNECT_US_MAX=%lu RX=%lu INVALID=%lu OVERFLOW=%lu TIMEOUT=%lu "
-        "DROPPED_SEQUENCE=%lu SEQUENCE=N/A LAST_RX_AGE_MS=%lu INPUT_VALID=%u "
-        "OUTPUT=%s DATA=%s UPTIME_MS=%lu RESET=%s\n",
-        receiverState.w5500InitOk ? "OK" : "FAIL",
-        receiverState.lanConfigOk ? "OK" : "FAIL", linkText(),
-        receiverState.actualIpText.c_str(),
-        LanReceiverConfig::kSenderIp.toString().c_str(),
-        static_cast<unsigned>(LanReceiverConfig::kTcpPort),
-        receiverState.tcpConnected ? "CONNECTED" : "WAITING",
-        static_cast<unsigned long>(receiverState.connectCount),
-        static_cast<unsigned long>(receiverState.connectFailCount),
-        static_cast<unsigned long>(receiverState.connectLastUs),
-        static_cast<unsigned long>(receiverState.connectMaxUs),
-        static_cast<unsigned long>(receiverState.rxCount),
-        static_cast<unsigned long>(receiverState.invalidCount),
-        static_cast<unsigned long>(receiverState.overflowCount),
-        static_cast<unsigned long>(receiverState.timeoutCount),
-        static_cast<unsigned long>(receiverState.droppedSequence),
-        static_cast<unsigned long>(receiverState.hasValidRecord
-                                       ? now - receiverState.lastRxMs
-                                       : 0),
-        receiverState.inputValid ? 1 : 0,
-        receiverState.inputValid ? "ACTIVE" : "NEUTRAL", outputRecord,
-        static_cast<unsigned long>(now),
-        resetReasonText(receiverState.resetReason));
+  char ipText[16];
+  snprintf(ipText,sizeof(ipText),"%u.%u.%u.%u",state.actualIp[0],state.actualIp[1],
+           state.actualIp[2],state.actualIp[3]);
+  Serial.printf("[RECEIVER] UPTIME=%lu BATTERY=%d W5500_INIT=%s LAN_CFG=%s IP_ACT=%s LINK=%s "
+    "CONTROL_RX=%lu CONTROL_HZ=%lu CONTROL_VALID=%u CONTROL_TIMEOUT=%u CONTROL_CRC_FAIL=%lu CONTROL_SEQ_GAP=%lu CONTROL_RX_BACKLOG=%lu "
+    "STATUS_TX=%lu STATUS_HZ=%lu STATUS_TX_FAIL=%lu STATUS_SCHEDULE_SKIP=%lu "
+    "UART_TX=%lu UART_RX_BYTES=%lu UART_VALID_FRAMES=%lu UART_CRC_FAIL=%lu "
+    "LOOP_PER_SEC=%lu MAX_LAN_OP_US=%lu MAX_LOOP_US=%lu RESET=%s\n",
+    (unsigned long)now,state.battery,state.w5500?"OK":"FAIL",
+    state.lanCfg?"OK":"FAIL",ipText,linkText(),(unsigned long)state.controlRx,
+    (unsigned long)state.controlRxPerSec,state.controlValid,state.controlTimeout,
+    (unsigned long)state.controlCrcFail,(unsigned long)state.controlSeqGap,
+    (unsigned long)state.controlRxBacklog,(unsigned long)state.statusTx,
+    (unsigned long)state.statusTxPerSec,(unsigned long)state.statusTxFail,
+    (unsigned long)state.statusScheduleSkip,(unsigned long)state.uartTx,
+    (unsigned long)state.uartRxBytes,(unsigned long)state.uartValidFrames,
+    (unsigned long)state.uartCrcFail,(unsigned long)state.loopsPerSec,
+    (unsigned long)state.maxLanOperationUs,(unsigned long)state.maxLoopDurationUs,
+    resetText());
+  state.maxLanOperationUs=0;
+  state.maxLoopDurationUs=0;
 }
 
 void setup() {
-    receiverState.resetReason = esp_reset_reason();
-    Serial.begin(115200);
-    delay(100);
-    prepareLanPins();
-    auto cfg = M5.config();
-    cfg.internal_spk = false;
-    cfg.internal_mic = false;
-    M5.begin(cfg);
-    prepareLanPins();
-    Serial2.begin(115200, SERIAL_8N1, SERIAL2_RX_PIN, SERIAL2_TX_PIN);
-    tcpClient.setConnectionTimeout(LanReceiverConfig::kConnectTimeoutMs);
-    neutralizeOutput("STARTUP", true);
-    Serial.println("\n=== CoreS3 SE PS5 CoRE LAN Receiver ===");
-    initializeLan();
-    const uint32_t now = millis();
-    lastLinkPollMs = now - LanReceiverConfig::kLinkPollIntervalMs;
-    lastConnectAttemptMs = now - LanReceiverConfig::kConnectRetryIntervalMs;
-    lastDisplayMs = now - LanReceiverConfig::kDisplayIntervalMs;
-    lastSerialMs = now - LanReceiverConfig::kSerialIntervalMs;
+  auto cfg=M5.config();
+  cfg.internal_spk=false;
+  cfg.internal_mic=false;
+  M5.begin(cfg);
+  Serial.begin(115200);
+  prepareExternalPins();
+  pinMode(SERIAL2_RX_PIN,INPUT_PULLUP);
+  Serial2.begin(115200,SERIAL_8N1,SERIAL2_RX_PIN,SERIAL2_TX_PIN);
+  state.resetReason=esp_reset_reason();
+  neutralize();
+  M5.Display.setRotation(1);
+  M5.Display.fillScreen(BLACK);
+  state.selfTestOk=selfTest();
+  Serial.printf("PROTOCOL_SELF_TEST=%s\n",state.selfTestOk?"OK":"FAIL");
+  if(state.selfTestOk) initializeLan();
+  char ipText[16];
+  snprintf(ipText,sizeof(ipText),"%u.%u.%u.%u",state.actualIp[0],state.actualIp[1],
+           state.actualIp[2],state.actualIp[3]);
+  Serial.printf("W5500_INIT=%s LAN_CFG=%s IP_ACT=%s UDP=%s UART=115200,8N1,RX18,TX17\n",
+    state.w5500?"OK":"FAIL",state.lanCfg?"OK":"FAIL",ipText,
+    state.udpReady?"OK":"SKIP");
+  updateBattery();
+  const uint32_t now=millis();
+  nextStatusMs=now+Config::kStatusPhaseMs;
+  lastRateMs=now;
+  drawStatus(now);
 }
 
 void loop() {
-    M5.update();
-    const uint32_t now = millis();
-    if (now - lastLinkPollMs >= LanReceiverConfig::kLinkPollIntervalMs) {
-        lastLinkPollMs = now;
-        if (receiverState.w5500InitOk) {
-    deselectExternalSpiDevices();
-            receiverState.linkStatus = Ethernet.linkStatus();
-        }
-    }
-    connectIfNeeded(now);
-    if (receiverState.tcpConnected) processTcpInput(now);
-    updateSafety(now);
-    if (now - lastDisplayMs >= LanReceiverConfig::kDisplayIntervalMs) {
-        lastDisplayMs = now;
-        drawStatus(now);
-    }
-    if (now - lastSerialMs >= LanReceiverConfig::kSerialIntervalMs) {
-        lastSerialMs = now;
-        logStatus(now);
-    }
+  const uint32_t loopStartUs=micros();
+  ++state.loopCount;
+  M5.update();
+  uint32_t now=millis();
+  if(state.udpReady) receiveAtMostTwoControlPackets(now);
+  serviceUartParser();
+  serviceTimeout(now);
+  if(now-lastLinkMs>=Config::kLinkPollMs) {
+    lastLinkMs=now;
+    if(state.w5500) pollLink();
+  }
+  now=millis();
+  sendAtMostOneStatusFrame(now);
+  if(now-lastBatteryMs>=Config::kBatteryMs) {
+    lastBatteryMs=now;
+    updateBattery();
+  }
+  updateRates(now);
+  if(now-lastDrawMs>=Config::kDrawMs) { lastDrawMs=now; drawStatus(now); }
+  if(now-lastSerialMs>=Config::kSerialMs) { lastSerialMs=now; logStatus(now); }
+  const uint32_t elapsedUs=micros()-loopStartUs;
+  if(elapsedUs>state.maxLoopDurationUs) state.maxLoopDurationUs=elapsedUs;
 }

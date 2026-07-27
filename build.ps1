@@ -437,6 +437,18 @@ if (Test-Path $BuildSketchDir) {
 }
 New-Item -ItemType Directory -Path $BuildSketchDir | Out-Null
 Copy-Item -Path $SketchPath -Destination (Join-Path $BuildSketchDir $SketchName) -Force
+$CoreProtocolSource = Join-Path $PSScriptRoot "src\core_protocol"
+if ($SketchName -in @("M5Stack-PS5CoRELANSender.ino", "M5Stack-PS5CoRELANReceiver.ino")) {
+    if (!(Test-Path (Join-Path $CoreProtocolSource "CoreProtocol.h")) -or
+        !(Test-Path (Join-Path $CoreProtocolSource "CoreProtocol.cpp"))) {
+        throw "Core protocol module is incomplete: $CoreProtocolSource"
+    }
+    $CoreProtocolDestination = Join-Path $BuildSketchDir "src\core_protocol"
+    New-Item -ItemType Directory -Path $CoreProtocolDestination -Force | Out-Null
+    Copy-Item -LiteralPath (Join-Path $CoreProtocolSource "CoreProtocol.h") -Destination $CoreProtocolDestination -Force
+    Copy-Item -LiteralPath (Join-Path $CoreProtocolSource "CoreProtocol.cpp") -Destination $CoreProtocolDestination -Force
+    Write-Output "Core protocol module: $CoreProtocolDestination"
+}
 
 Write-Output "Build sketch folder: $BuildSketchDir"
 
