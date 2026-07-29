@@ -5,10 +5,22 @@ M5Stack に USB Host Shield を接続し、Nintendo Switch 用コントローラ
 `M5Stack Core`、`M5Stack Core2`、`M5 CoreS3 SE` を対象に、`USB Host Shield Library 2.0` ベースで `M5Stack USB Module v1.2` を利用します。
 UI/電源制御は `M5Unified` 前提で実装しており、`M5Stack.h` ではなく `M5Unified.h` を使用します。
 
+## 現在の開発状態
+
+- 製品LAN Sender `M5Stack-PS5CoRELANSender.ino`には、現在もDualSense専用のVID/PID判定とreport解析が残っています。
+- Product-supported controllerは現在ありません。
+- DualSense `054C/0CE6`は、現行CoreS3 SE／MAX3421E／USB Host Shield Library 1.7.0構成では採用を停止しています。
+- HORI PAD TURBO `0F0D/0202`（本体モード`Switch 2`）は、Legacy WirelessSenderおよびUSB-only診断で合計22分以上detachなしでした。
+- HORI profileはまだ製品LAN Senderへ実装されていません。現状の製品SenderへHORIを接続しても入力は無効となり、CONTROLは中立値のままです。
+- 次工程は、Legacy WirelessSenderのHORI parserを製品Senderへ移植し、USB-only mappingを確認してからLAN統合へ進むことです。
+- OULEKE（Amazon ASIN `B0FL6VS3JF`）は現物評価待ちです。
+
+詳細は`docs/ai/controller-compatibility.md`と`docs/cores3se-usb-lan-root-cause-report.md`を参照してください。
+
 ## 今回の主な変更点
 
 - `M5Stack-PS5CoREWirelessTransmitter` と `M5Stack-PS5CoREWirelessReceiver` を追加し、M5Stack 同士を WiFi で接続できる構成に対応
-- `M5Stack-PS5CoREWirelessSender` を DualSense (PS5 コントローラー) の入力解析に対応
+- `M5Stack-PS5CoREWirelessSender` に DualSense (PS5 コントローラー) の入力解析を追加（歴史的実装。現在の製品推奨controllerではありません）
 - `build.ps1` に `-SketchName` を追加し、ビルド対象スケッチを切り替え可能化
 
 ## 機能
@@ -76,7 +88,7 @@ UI/電源制御は `M5Unified` 前提で実装しており、`M5Stack.h` では�
 
 - **M5Stack Core / Core2 / CoreS3 SE**
 - **M5Stack USB Module** (MAX3421E 搭載の USB Host Shield)
-- **Nintendo Switch 対応 USB コントローラー** (動作確認済み: HORI PAD TURBO)
+- **Nintendo Switch 対応 USB コントローラー** (Legacy WirelessSenderでUSB-only動作確認済み: HORI PAD TURBO。製品LAN Senderは未対応)
 - **HORI PAD TURBO 本体の切替スイッチ**: `Switch 2` 側で使用（`PC` 側だと想定配列になりません）
 
 ### USB Module v1.2 の DIP スイッチ設定 (シルク準拠)
@@ -197,11 +209,14 @@ cp config.json.sample config.json
 .\build.ps1 -Board cores3se -SsChannel 2 -IntChannel 2 -ExportBinaries
 ```
 
-## CoreS3 SE + DualSense + LAN積層診断
+## 歴史的記録: CoreS3 SE + DualSense + LAN積層診断
+
+> [!IMPORTANT]
+> 以下は原因分離時に使用した旧診断計画です。現在の製品baselineや次工程ではありません。最終判断は上記「現在の開発状態」とroot-cause reportを優先してください。
 
 `M5Stack-PS5CoRELanStackDiagnostic.ino` は、M5 CoreS3 SEにUSB Module v1.2（MAX3421E）とModule13.2 LAN（W5500）を積層し、共有SPI上でDualSense入力と固定周期UDP送信を同時に動かすための最小診断スケッチです。製品用通信プロトコルではありません。また、このスケッチは `cores3se` 専用です。
 
-> CoreS3 SE積層診断が完了するまでは、CoreS3 SE＋USB Module v1.2＋LAN Module 13.2＋純正DualSenseのみを検証対象とする。Basic、Core2、既存Wi-Fi送受信スケッチ等の回帰検証は後続フェーズで実施する。
+> この節の検証対象は当時のDualSense原因分離に限定したものです。診断は完了し、DualSenseは現在の製品開発から分離されています。
 
 ### 根拠資料と採用ピン
 
@@ -433,10 +448,12 @@ CoreS3 SE積層診断スケッチの `cores3se` ビルドのみを実施しま�
 
 製品用LANスケッチは次の2ファイルです。
 
-- `M5Stack-PS5CoRELANSender.ino`: `192.168.50.10`で待受けるTCP server
-- `M5Stack-PS5CoRELANReceiver.ino`: `192.168.50.20`からSenderへ接続するTCP client
+- `M5Stack-PS5CoRELANSender.ino`: `192.168.50.10`からCONTROLを送信し、STATUSを受信するUDP endpoint
+- `M5Stack-PS5CoRELANReceiver.ino`: `192.168.50.20`でCONTROLを受信し、STATUSを返信するUDP endpoint
 
-製品通信は既存Wireless実装をそのまま引き継ぎ、TCP port `12345`、20文字ASCII `BB,BB,DD,LX,LY,RX,RY`とLF区切りを使用します。診断スケッチのUDP port `50000`／24バイト`M5DS`パケットはネットワーク診断専用であり、製品プロトコルではありません。事実ベースの比較は `docs/lan-protocol-reuse-analysis.md` を参照してください。
+製品通信はUDP port `50001`、固定32 byte frame、20 ms周期、100 ms timeout、CRC-16/CCITT-FALSEを使用します。ReceiverのPort C UARTも同じ32 byte frameを115200 8N1で出力します。wire formatの正本は`src/core_protocol/`と`docs/ai/protocol-and-safety.md`です。
+
+製品Senderの現在の初期化順序はLAN/W5500が先、USB/MAX3421Eが後です。USB_FIRST診断ではRUNNINGへ到達せず、LAN_FIRSTでは到達した実測がありますが、LAN_FIRSTでもDualSenseは後にdetachしました。初期化成立とcontroller安定性は別の判定です。
 
 ```powershell
 # LAN Sender
