@@ -19,6 +19,12 @@
 #ifndef USB_LAN_TEST_DURATION_MS
 #define USB_LAN_TEST_DURATION_MS 600000UL
 #endif
+#ifndef USB_TARGET_READY_TIMEOUT_MS
+#define USB_TARGET_READY_TIMEOUT_MS 0UL
+#endif
+#ifndef USB_POWERED_HUB_TEST
+#define USB_POWERED_HUB_TEST 0
+#endif
 #ifndef USB_HOST_SHIELD_SS_GPIO
 #define USB_HOST_SHIELD_SS_GPIO 1
 #endif
@@ -60,6 +66,7 @@ class DiagnosticHID : public HIDUniversal {
   explicit DiagnosticHID(USB* usb):HIDUniversal(usb){}
   uint16_t vid() const { return VID; }
   uint16_t pid() const { return PID; }
+  uint8_t address() const { return bAddress; }
 };
 DiagnosticHID Hid(&Usb);
 EthernetUDP udp;
@@ -69,6 +76,8 @@ struct State {
   bool w5500Init=false, lanConfig=false, udpReady=false;
   bool dropDetected=false, stopped=false, spiCorruptionSuspected=false;
   bool everRunning=false, everHidReady=false;
+  bool poweredHubTargetReady=false, everPoweredHubTargetReady=false;
+  bool targetTimeoutReported=false;
   uint8_t usbTaskState=0, previousUsbTaskState=0, maxRevision=0;
   uint16_t vid=0, pid=0, controlSequence=0;
   EthernetLinkStatus link=Unknown;
@@ -94,6 +103,22 @@ class DiagnosticParser : public HIDReportParser {
   }
 } parser;
 
+struct InventoryEntry {
+  uint8_t address=0, parent=0, port=0;
+  bool hub=false;
+};
+InventoryEntry inventory[USB_NUMDEVICES];
+uint8_t inventoryCount=0;
+
+void collectInventoryDevice(UsbDevice* device){
+  if(!device || inventoryCount>=USB_NUMDEVICES)return;
+  InventoryEntry& entry=inventory[inventoryCount++];
+  entry.address=device->address.devAddress;
+  entry.parent=device->address.bmParent;
+  entry.port=device->address.bmAddress;
+  entry.hub=device->address.bmHub;
+}
+
 struct TripleRead {
   uint8_t a=0, b=0, c=0;
   bool mismatch=false;
@@ -109,6 +134,12 @@ struct MaxSnapshot {
   uint16_t vid=0, pid=0;
   uint32_t millisValue=0, microsValue=0;
 };
+
+// Keep Arduino's generated function prototypes from referring to TripleRead
+// before the sketch-local type is declared.
+TripleRead readTriple(uint8_t reg,bool revision);
+MaxSnapshot captureMaxSnapshot();
+void printSnapshot(const char* reason,const MaxSnapshot& value);
 
 inline void prepareForUsbAccess(){digitalWrite(Config::kLanCs,HIGH);}
 inline void prepareForLanAccess(){digitalWrite(USB_HOST_SHIELD_SS_GPIO,HIGH);}
@@ -244,6 +275,10 @@ void initializeLan(){
 
 void serviceUsbTask(){
   if(!state.usbInit)return;
+  const uint8_t stateBefore=Usb.getUsbTaskState();
+  const bool hidBefore=Hid.isReady();
+  const uint16_t vidBefore=hidBefore?Hid.vid():0;
+  const uint16_t pidBefore=hidBefore?Hid.pid():0;
   prepareForUsbAccess();
   const uint32_t startUs=micros();
   if(state.lastUsbServiceUs){
@@ -256,6 +291,85 @@ void serviceUsbTask(){
   releaseExternalSpiDevices();
   if(elapsed>state.maxUsbTaskUs)state.maxUsbTaskUs=elapsed;
   ++state.usbTaskCount;
+  if(elapsed>20000){
+    const uint8_t stateAfter=Usb.getUsbTaskState();
+    const bool hidAfter=Hid.isReady();
+    Serial.printf("USB_TASK_SLOW DURATION_US=%lu STATE_BEFORE=%02X STATE_AFTER=%02X "
+      "HID_BEFORE=%u HID_AFTER=%u VID_BEFORE=%04X PID_BEFORE=%04X "
+      "VID_AFTER=%04X PID_AFTER=%04X\n",(unsigned long)elapsed,stateBefore,
+      stateAfter,hidBefore,hidAfter,vidBefore,pidBefore,
+      hidAfter?Hid.vid():0,hidAfter?Hid.pid():0);
+    if(elapsed>100000){
+      state.usbTaskState=stateAfter;
+      state.hidReady=hidAfter;
+      state.vid=hidAfter?Hid.vid():0;
+      state.pid=hidAfter?Hid.pid():0;
+      printSnapshot("USB_TASK_SLOW",captureMaxSnapshot());
+    }
+  }
+}
+
+void logUsbInventory(){
+  inventoryCount=0;
+  Usb.ForEachUsbDevice(collectInventoryDevice);
+  const bool hubReady=Hub.GetAddress()!=0;
+  const bool targetReady=Hid.isReady();
+  UsbDeviceAddress hidAddress{};
+  hidAddress.devAddress=targetReady?Hid.address():0;
+  const bool downstreamHidReady=targetReady && hidAddress.bmParent!=0;
+  const uint8_t hubAddress=Hub.GetAddress();
+  const uint8_t targetAddress=targetReady?Hid.address():0;
+  uint8_t targetParent=0;
+  uint8_t targetPort=0;
+  for(uint8_t index=0;index<inventoryCount;++index){
+    if(inventory[index].address==targetAddress){
+      targetParent=inventory[index].parent;
+      targetPort=inventory[index].port;
+      break;
+    }
+  }
+  USB_DEVICE_DESCRIPTOR hubDescriptor{};
+  USB_DEVICE_DESCRIPTOR targetDescriptor{};
+  uint8_t hubDescriptorResult=0xFF;
+  uint8_t targetDescriptorResult=0xFF;
+  if(hubAddress!=0){
+    prepareForUsbAccess();
+    hubDescriptorResult=Usb.getDevDescr(hubAddress,0,sizeof(hubDescriptor),
+      reinterpret_cast<uint8_t*>(&hubDescriptor));
+    releaseExternalSpiDevices();
+  }
+  if(targetAddress!=0){
+    prepareForUsbAccess();
+    targetDescriptorResult=Usb.getDevDescr(targetAddress,0,
+      sizeof(targetDescriptor),reinterpret_cast<uint8_t*>(&targetDescriptor));
+    releaseExternalSpiDevices();
+  }
+  Serial.printf("USB_DEVICE_COUNT=%u HUB_READY=%u DOWNSTREAM_HID_READY=%u "
+    "TARGET_CONTROLLER_READY=%u\n",inventoryCount,hubReady,
+    downstreamHidReady,targetReady);
+  Serial.printf("HUB_ADDRESS=%02X HUB_VID=%04X HUB_PID=%04X "
+    "TARGET_ADDRESS=%02X TARGET_PARENT=%u TARGET_PORT=%u TARGET_CLASS=%02X "
+    "TARGET_VID=%04X TARGET_PID=%04X TARGET_DEVICE_PRESENT=%u\n",
+    hubAddress,hubDescriptorResult==0?hubDescriptor.idVendor:0,
+    hubDescriptorResult==0?hubDescriptor.idProduct:0,targetAddress,
+    targetParent,targetPort,targetDescriptorResult==0?
+      targetDescriptor.bDeviceClass:0xFF,
+    targetDescriptorResult==0?targetDescriptor.idVendor:0,
+    targetDescriptorResult==0?targetDescriptor.idProduct:0,targetReady);
+  for(uint8_t index=0;index<inventoryCount;++index){
+    USB_DEVICE_DESCRIPTOR descriptor{};
+    prepareForUsbAccess();
+    const uint8_t result=Usb.getDevDescr(inventory[index].address,0,
+      sizeof(descriptor),reinterpret_cast<uint8_t*>(&descriptor));
+    releaseExternalSpiDevices();
+    Serial.printf("USB_DEVICE_ADDR[%u]=%02X USB_DEVICE_PARENT[%u]=%u "
+      "USB_DEVICE_PORT[%u]=%u USB_DEVICE_CLASS[%u]=%02X "
+      "USB_DEVICE_VID[%u]=%04X USB_DEVICE_PID[%u]=%04X DESCR_RESULT=%02X\n",
+      index,inventory[index].address,index,inventory[index].parent,index,
+      inventory[index].port,index,result==0?descriptor.bDeviceClass:0xFF,
+      index,result==0?descriptor.idVendor:0,index,
+      result==0?descriptor.idProduct:0,result);
+  }
 }
 
 void updateUsbIdentity(){
@@ -263,6 +377,11 @@ void updateUsbIdentity(){
   state.hidReady=state.usbInit&&Hid.isReady();
   if(state.usbTaskState==0x90)state.everRunning=true;
   if(state.hidReady)state.everHidReady=true;
+  UsbDeviceAddress hidAddress{};
+  hidAddress.devAddress=state.hidReady?Hid.address():0;
+  state.poweredHubTargetReady=state.hidReady && Hub.GetAddress()!=0 &&
+                              hidAddress.bmParent!=0;
+  if(state.poweredHubTargetReady)state.everPoweredHubTargetReady=true;
   if(state.previousHidReady&&!state.hidReady)++state.hidReadyDrop;
   state.previousHidReady=state.hidReady;
   if(state.hidReady){state.vid=Hid.vid();state.pid=Hid.pid();}
@@ -376,6 +495,7 @@ void logOneSecond(uint32_t now){
     state.lastRevBefore,state.lastRevAfter,state.lastHrslBefore,state.lastHrslAfter,
     state.spiCorruptionSuspected,(unsigned long)state.controlTx,
     (unsigned long)state.statusRx,resetText());
+  if(USB_TARGET_READY_TIMEOUT_MS>0)logUsbInventory();
   state.maxUsbGapUs=0;
   state.maxUsbTaskUs=0;
 }
@@ -385,7 +505,9 @@ void stopTest(bool passed,uint32_t now){
   state.stopped=true;
   const bool criteriaPassed=passed && state.everRunning && state.everHidReady &&
     state.usbTaskState==0x90 && state.hidReady && state.hidReportTotal>0 &&
-    state.hidReadyDrop==0 && state.maxSpiReadMismatch==0;
+    state.hidReadyDrop==0 && state.maxSpiReadMismatch==0 &&
+    (!USB_POWERED_HUB_TEST ||
+      (state.everPoweredHubTargetReady && state.poweredHubTargetReady));
   Serial.printf("TEST_COMPLETE=%s TEST_MODE=%d INIT_ORDER=%d DURATION_MS=%lu "
     "DROP_TIME_MS=%lu HID_READY_DROP=%lu MAX_SPI_READ_MISMATCH=%lu "
     "SPI_CORRUPTION_SUSPECTED=%u EVER_RUNNING=%u EVER_HID_READY=%u "
@@ -452,6 +574,19 @@ void loop(){
   if(now-state.lastSerialMs>=Config::kSerialMs){
     state.lastSerialMs=now;
     logOneSecond(now);
+  }
+  const bool targetGateReady=USB_POWERED_HUB_TEST?
+    state.everPoweredHubTargetReady:state.everHidReady;
+  if(USB_TARGET_READY_TIMEOUT_MS>0 && !targetGateReady &&
+     !state.targetTimeoutReported &&
+     now-state.startMs>=USB_TARGET_READY_TIMEOUT_MS){
+    state.targetTimeoutReported=true;
+    Serial.printf("TEST_RESULT=NO_TARGET_HID HUB_READY=%u USB_STATE=%02X "
+      "HID_READY=%u VID=%04X PID=%04X HID_REPORT_TOTAL=%lu "
+      "TARGET_CONTROLLER_READY=%u\n",
+      Hub.GetAddress()!=0,state.usbTaskState,state.hidReady,state.vid,state.pid,
+      (unsigned long)state.hidReportTotal,state.poweredHubTargetReady);
+    state.stopped=true;
   }
   if(state.dropDetected && static_cast<int32_t>(now-state.stopMs)>=0){
     stopTest(false,now);

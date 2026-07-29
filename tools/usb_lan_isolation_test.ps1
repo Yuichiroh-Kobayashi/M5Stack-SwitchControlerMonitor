@@ -6,6 +6,33 @@ param(
     [ValidateRange(30, 3600)]
     [int]$DurationSeconds = 600,
     [string]$Port = "COM4",
+    [ValidateSet("StackedLan", "NoLanModule", "PoweredHub")]
+    [string]$PhysicalSetup = "StackedLan",
+    [ValidateSet("DualSenseA", "DualSenseB", "HoriPad", "Mouse", "Keyboard", "Unknown")]
+    [string]$Controller = "Unknown",
+    [string]$ControllerVidPid = "",
+    [ValidateSet("Original", "Alternate", "Fixed", "HubUpstream", "Unknown")]
+    [string]$Cable = "Unknown",
+    [ValidateSet("HIDUniversal", "PS5USB", "WirelessSender", "Legacy")]
+    [string]$UsbDriver = "HIDUniversal",
+    [ValidateSet("Present", "Removed")]
+    [string]$BatteryBottom = "Present",
+    [string]$HubModel = "Unknown",
+    [ValidateSet("EXTERNAL_ON", "OFF", "Unknown")]
+    [string]$HubPower = "Unknown",
+    [string]$HubPort = "Unknown",
+    [ValidateSet("ON", "OFF", "Unknown")]
+    [string]$HubPortSwitch = "Unknown",
+    [ValidateSet("ON", "OFF", "Unknown")]
+    [string]$OtherPortSwitches = "Unknown",
+    [ValidateSet("IsolationDiagnostic", "WirelessSender", "Ps5UsbDiagnostic")]
+    [string]$Firmware = "IsolationDiagnostic",
+    [ValidateRange(0, 1)]
+    [int]$UsbHidRawLog = 0,
+    [ValidateRange(0, 1)]
+    [int]$Ps5InitOutput = 0,
+    [ValidatePattern('^[A-Za-z0-9_-]*$')]
+    [string]$TestLabel = "",
     [switch]$PrepareOnly,
     [switch]$ReuseBuild,
     [switch]$BuildOnly,
@@ -13,6 +40,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$ps5InitOutputText = if ($Ps5InitOutput -eq 0) { "NO_OUTPUT" } else { "DEFAULT" }
+$targetReadyTimeoutMs = if ($PhysicalSetup -eq "PoweredHub" -or $Firmware -eq "Ps5UsbDiagnostic") { 15000 } else { 0 }
+$poweredHubTest = if ($PhysicalSetup -eq "PoweredHub") { 1 } else { 0 }
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $isolationRoot = Join-Path $repoRoot "build-temp\usb-lan-isolation"
 $downloadPath = Join-Path $isolationRoot "downloads\USB_Host_Shield_2.0-1.7.0.zip"
@@ -216,6 +246,34 @@ function Capture-Diagnostic([string]$LogPath) {
     $buffer = ""
     $complete = $null
     try {
+        $metadata = @(
+            "TEST_METADATA",
+            "PHYSICAL_SETUP=$PhysicalSetup",
+            "CONTROLLER=$Controller",
+            "CONTROLLER_VID_PID=$ControllerVidPid",
+            "CABLE=$Cable",
+            "USB_DRIVER=$UsbDriver",
+            "BATTERY_BOTTOM=$BatteryBottom",
+            "HUB_MODEL=$HubModel",
+            "HUB_POWER=$HubPower",
+            "HUB_PORT=$HubPort",
+            "HUB_PORT_SWITCH=$HubPortSwitch",
+            "OTHER_PORT_SWITCHES=$OtherPortSwitches",
+            "LAN_MODULE=$(if ($PhysicalSetup -eq 'StackedLan') { 'PRESENT' } else { 'REMOVED' })",
+            "FIRMWARE=$Firmware",
+            "PORT=$Port",
+            "MODE=$Mode",
+            "INIT_ORDER=$InitOrder",
+            "DURATION_SECONDS=$DurationSeconds",
+            "PS5_INIT_OUTPUT=$ps5InitOutputText",
+            "TEST_LABEL=$TestLabel"
+        )
+        foreach ($metadataLine in $metadata) {
+            $record = "$(Get-Date -Format o) HOST $metadataLine"
+            $writer.WriteLine($record)
+            Write-Output $record
+        }
+        $writer.Flush()
         $serial.Open()
         $deadline = [DateTime]::UtcNow.AddSeconds($DurationSeconds + 120)
         while ([DateTime]::UtcNow -lt $deadline -and $null -eq $complete) {
@@ -230,7 +288,10 @@ function Capture-Diagnostic([string]$LogPath) {
                 $writer.WriteLine($record)
                 $writer.Flush()
                 Write-Output $record
-                if ($line -match '^TEST_COMPLETE=(PASS|FAIL)') { $complete = $line }
+                if ($line -match '^TEST_COMPLETE=(PASS|FAIL)' -or
+                    $line -match '^TEST_RESULT=(NO_TARGET_HID|OSC_INIT_FAILED|SET_REPORT_PARSER_ERROR|WRONG_BOOT_MODE|PANIC|WDT)') {
+                    $complete = $line
+                }
             }
         }
     }
@@ -248,20 +309,44 @@ if ($PrepareOnly) { exit 0 }
 
 if ($Mode -lt 3 -and $InitOrder -ne 0) { throw "Modes 0..2 require InitOrder 0." }
 if ($Mode -ge 3 -and $InitOrder -eq 0) { throw "Modes 3..7 require InitOrder 1 or 2." }
+if ($PhysicalSetup -eq "NoLanModule" -and $Mode -ge 2) {
+    throw "NoLanModule is limited to Mode 0 or 1; LAN-capable modes require the LAN Module."
+}
+if ($Firmware -eq "WirelessSender" -and ($Mode -ne 0 -or $InitOrder -ne 0)) {
+    throw "WirelessSender tests require Mode 0 and InitOrder 0 metadata."
+}
+if ($Firmware -eq "WirelessSender" -and $UsbDriver -ne "WirelessSender") {
+    throw "WirelessSender firmware requires UsbDriver WirelessSender."
+}
+if ($Firmware -eq "Ps5UsbDiagnostic" -and ($Mode -ne 0 -or $InitOrder -ne 0)) {
+    throw "Ps5UsbDiagnostic tests require Mode 0 and InitOrder 0 metadata."
+}
+if ($Firmware -eq "Ps5UsbDiagnostic" -and $UsbDriver -ne "PS5USB") {
+    throw "Ps5UsbDiagnostic firmware requires UsbDriver PS5USB."
+}
 
-$caseName = "mode-$Mode-order-$InitOrder"
-$sketchDir = Join-Path $isolationRoot "sketches\$caseName\M5Stack-PS5CoREUsbLanIsolationDiagnostic"
+$firmwareSlug = $Firmware.ToLowerInvariant()
+$sourceSketchName = switch ($Firmware) {
+    "WirelessSender" { "M5Stack-SwitchController2CoREWirelessSender.ino" }
+    "Ps5UsbDiagnostic" { "M5Stack-PS5CoREPs5UsbDiagnostic.ino" }
+    default { "M5Stack-PS5CoREUsbLanIsolationDiagnostic.ino" }
+}
+$sketchBaseName = [System.IO.Path]::GetFileNameWithoutExtension($sourceSketchName)
+$durationMs = $DurationSeconds * 1000
+$caseName = "$firmwareSlug-mode-$Mode-order-$InitOrder-duration-$DurationSeconds-timeout-$targetReadyTimeoutMs-hub-$poweredHubTest-ps5out-$Ps5InitOutput-raw-$UsbHidRawLog"
+$sketchDir = Join-Path $isolationRoot "sketches\$caseName\$sketchBaseName"
 $buildPath = Join-Path $isolationRoot "build\$caseName"
 $logDir = Join-Path $isolationRoot "logs"
 New-Item -ItemType Directory -Force -Path $sketchDir, $buildPath, $logDir | Out-Null
-Copy-Item -LiteralPath (Join-Path $repoRoot "M5Stack-PS5CoREUsbLanIsolationDiagnostic.ino") -Destination $sketchDir -Force
-$coreSource = Join-Path $repoRoot "src\core_protocol"
-$coreDestination = Join-Path $sketchDir "src\core_protocol"
-New-Item -ItemType Directory -Force -Path $coreDestination | Out-Null
-Copy-Item -LiteralPath (Join-Path $coreSource "CoreProtocol.h") -Destination $coreDestination -Force
-Copy-Item -LiteralPath (Join-Path $coreSource "CoreProtocol.cpp") -Destination $coreDestination -Force
+Copy-Item -LiteralPath (Join-Path $repoRoot $sourceSketchName) -Destination $sketchDir -Force
+if ($Firmware -eq "IsolationDiagnostic") {
+    $coreSource = Join-Path $repoRoot "src\core_protocol"
+    $coreDestination = Join-Path $sketchDir "src\core_protocol"
+    New-Item -ItemType Directory -Force -Path $coreDestination | Out-Null
+    Copy-Item -LiteralPath (Join-Path $coreSource "CoreProtocol.h") -Destination $coreDestination -Force
+    Copy-Item -LiteralPath (Join-Path $coreSource "CoreProtocol.cpp") -Destination $coreDestination -Force
+}
 
-$durationMs = $DurationSeconds * 1000
 $extraFlags = @(
     "-DESP32", "-DUSB_HOST_SHIELD_SS_TYPE=P1", "-DUSB_HOST_SHIELD_INT_TYPE=P14",
     "-DPIN_SPI_SCK=36", "-DPIN_SPI_MOSI=37", "-DPIN_SPI_MISO=35", "-DPIN_SPI_SS=1",
@@ -270,7 +355,11 @@ $extraFlags = @(
     "-DARDUINO_USB_MODE=1", "-DARDUINO_USB_CDC_ON_BOOT=1",
     "-DARDUINO_USB_MSC_ON_BOOT=0", "-DARDUINO_USB_DFU_ON_BOOT=0",
     "-DUSB_LAN_TEST_MODE=$Mode", "-DUSB_LAN_INIT_ORDER=$InitOrder",
-    "-DUSB_LAN_TEST_DURATION_MS=$durationMs"
+    "-DUSB_LAN_TEST_DURATION_MS=$durationMs", "-DUSB_TEST_DURATION_MS=$durationMs",
+    "-DUSB_HID_RAW_LOG=$UsbHidRawLog",
+    "-DUSB_TARGET_READY_TIMEOUT_MS=$targetReadyTimeoutMs",
+    "-DUSB_POWERED_HUB_TEST=$poweredHubTest",
+    "-DPS5USB_INIT_OUTPUT=$Ps5InitOutput"
 ) -join " "
 
 $buildLog = Join-Path $logDir "$caseName-build.log"
@@ -293,9 +382,15 @@ if (!$ReuseBuild) {
     throw "ReuseBuild requested but verbose build log is missing: $buildLog"
 }
 $buildText = Get-Content -LiteralPath $buildLog -Raw
-foreach ($requiredPath in @(
-    (Join-Path $libraryRoot "M5Unified"), (Join-Path $libraryRoot "M5GFX"),
-    (Join-Path $libraryRoot "M5-Ethernet"), $uhsIsolated)) {
+$requiredPaths = @(
+    (Join-Path $libraryRoot "M5Unified"),
+    (Join-Path $libraryRoot "M5GFX"),
+    $uhsIsolated
+)
+if ($Firmware -eq "IsolationDiagnostic") {
+    $requiredPaths += (Join-Path $libraryRoot "M5-Ethernet")
+}
+foreach ($requiredPath in $requiredPaths) {
     $includePattern = '-I"?' + [regex]::Escape($requiredPath)
     if ($buildText -notmatch $includePattern) {
         throw "Verbose build did not prove isolated library use: $requiredPath"
@@ -309,7 +404,7 @@ foreach ($globalPath in @(
         throw "Verbose build selected a global library include path: $globalPath"
     }
 }
-$firmwareBin = Join-Path $buildPath "M5Stack-PS5CoREUsbLanIsolationDiagnostic.ino.bin"
+$firmwareBin = Join-Path $buildPath "$sourceSketchName.bin"
 if (!(Test-Path -LiteralPath $firmwareBin)) { throw "Compiled firmware is missing: $firmwareBin" }
 Write-Output "ISOLATED_BUILD_PATHS_VERIFIED=1"
 if ($BuildOnly) { exit 0 }
@@ -319,6 +414,11 @@ Assert-SenderIdentity
 if ($LASTEXITCODE -ne 0) { throw "Upload failed for $caseName" }
 
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-$serialLog = Join-Path $logDir "$caseName-$timestamp-serial.log"
+$physicalSlug = $PhysicalSetup.ToLowerInvariant()
+$labelSlug = if ($TestLabel.Length -gt 0) { "-$($TestLabel.ToLowerInvariant())" } else { "" }
+$controllerSlug = $Controller.ToLowerInvariant()
+$driverSlug = $UsbDriver.ToLowerInvariant()
+$cableSlug = $Cable.ToLowerInvariant()
+$serialLog = Join-Path $logDir "$caseName-$physicalSlug-$controllerSlug-$driverSlug-$cableSlug$labelSlug-$timestamp-serial.log"
 Capture-Diagnostic $serialLog
 Write-Output "SERIAL_LOG=$serialLog"
