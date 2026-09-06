@@ -20,12 +20,14 @@ The current product direction is:
 - USB validation baseline: HORI PAD TURBO, VID/PID `0F0D/0202`, controller switch set to `Switch 2`.
 - Current product LAN Sender profile: the DualSense-specific implementation remains in place.
 - Product-supported controller: none yet.
-- Immediate implementation task: port the validated HORI profile from the legacy WirelessSender to the product LAN Sender before LAN integration testing.
+- Required product implementation: port the validated HORI profile from the legacy WirelessSender to the product LAN Sender before product LAN integration testing. Current diagnostic work is tracked in `docs/ai/investigation-status.md`; do not substitute a historical handoff's next gate.
 - Network: wired Ethernet through a switching hub.
 - Product transport: UDP with a fixed binary protocol.
 - Receiver output: UART Port C using the same fixed binary frame.
 
 Do not confuse this repository with QUESTiX ROS 2 firmware. CoRE and QUESTiX are separate systems.
+
+QUESTiX is an intended UART downstream (Raspberry Pi 5 / Ubuntu 24.04 / ROS 2 Jazzy), alongside the Scramble junior robot kit. For compatibility design, treat QUESTiX `parseControllerLine()`, its constants/tests, `readLine()`, and `serial_port.cpp` as the receiver contract. See `docs/uart-downstream-common-protocol-design.md` for pinned sources. The proposed common ASCII UART adapter is not yet adopted; the current binary LAN/UART contract below remains in force.
 
 ## Canonical files
 
@@ -54,6 +56,9 @@ Reference documentation:
 - `docs/ai/controller-compatibility.md`
 - `docs/ai/validation-gates.md`
 - `docs/cores3se-usb-lan-root-cause-report.md`
+- `docs/ai/investigation-status.md`: current diagnostic status, next work, and sharing scope.
+- `docs/usb-lan-next-non-null-read-design.md`: proposed diagnostic treatment, not a physical PASS.
+- `docs/uart-downstream-common-protocol-design.md`: downstream compatibility design, not a protocol revision.
 
 Before changing a behavior, locate its current source of truth and update the code, tests, and documentation consistently.
 

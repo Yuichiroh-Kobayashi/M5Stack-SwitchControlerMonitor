@@ -467,9 +467,15 @@ CoreS3 SE積層診断スケッチの `cores3se` ビルドのみを実施しま�
   -SsChannel 2 -IntChannel 2 -SkipUpload
 ```
 
-Windows試験ツールは `tools/lan_test/` にあります。`udp_receiver.py` は診断UDP、`core_protocol_receiver.py` はLANSender、`core_protocol_sender.py` は一時IPでビルドしたLANReceiverの単体試験に使用します。LANReceiverの最終既定IPはWindowsと同じ `192.168.50.20` なので、最終バイナリを現在の単体構成へ書き込んで試験しないでください。
+`tools/lan_test/udp_receiver.py` は診断UDP用です。同ディレクトリの `core_protocol_receiver.py` / `core_protocol_sender.py` は旧TCP port 12345・ASCII形式のツールであり、現在の32-byte UDP製品protocolの試験には使えません。binary formatの参照実装は `tools/core_protocol_reference.py` です。LANReceiverの最終既定IPはWindowsと同じ `192.168.50.20` なので、最終バイナリを現在の単体構成へ書き込んで試験しないでください。
+
+上記の旧 `build.ps1` は依存不足時の非固定version installやglobal library patchを含みます。現在の診断・release証拠にはそのまま使わず、隔離依存関係と固定versionのworkflowを確認してください。
+
+現在の調査状況は [調査ステータス](docs/ai/investigation-status.md)、QUESTiXとジュニアロボットキット向けUARTの検討は [共通UART設計案](docs/uart-downstream-common-protocol-design.md) を参照してください。ASCII UART案は未採用で、現在の製品出力は引き続き上記32-byte binaryです。
 
 ## ライセンス
+
+開発中の100Hz通信・25Hz数値LCD・低SPIの目標と現在の実装境界は[開発目標](docs/development-targets.md)を参照してください。これらは実機での達成・製品サポートを示すものではありません。
 
 [MIT License](LICENSE)
 

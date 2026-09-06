@@ -1,23 +1,32 @@
 param(
-    [ValidateRange(0, 7)]
+    [ValidateRange(0, 18)]
     [int]$Mode = 0,
     [ValidateRange(0, 2)]
     [int]$InitOrder = 0,
-    [ValidateRange(30, 3600)]
+    [ValidateRange(10, 3600)]
     [int]$DurationSeconds = 600,
     [string]$Port = "COM4",
     [ValidateSet("StackedLan", "NoLanModule", "PoweredHub")]
     [string]$PhysicalSetup = "StackedLan",
-    [ValidateSet("DualSenseA", "DualSenseB", "HoriPad", "Mouse", "Keyboard", "Unknown")]
+    [ValidateSet("DualSenseA", "DualSenseB", "HoriPad", "Mouse", "Keyboard", "NoUsb", "Unknown")]
     [string]$Controller = "Unknown",
     [string]$ControllerVidPid = "",
-    [ValidateSet("Original", "Alternate", "Fixed", "HubUpstream", "Unknown")]
+    [ValidateSet("Original", "Alternate", "Fixed", "HubUpstream", "Disconnected", "Connected", "Unknown")]
     [string]$Cable = "Unknown",
-    [ValidateSet("HIDUniversal", "PS5USB", "WirelessSender", "Legacy")]
+    [ValidateSet("HIDUniversal", "PS5USB", "WirelessSender", "Legacy", "None")]
     [string]$UsbDriver = "HIDUniversal",
     [ValidateSet("Present", "Removed")]
     [string]$BatteryBottom = "Present",
+    [ValidateSet("Unspecified", "CoreUsb", "BatteryBottom", "LanExternalSole", "DualSourceUnverified")]
+    [string]$PowerSource = "Unspecified",
     [string]$HubModel = "Unknown",
+    [ValidateSet("Unspecified", "HardwareStrap", "PowerDown", "Fixed10Half", "Fixed100Half", "Auto100Half", "AutoAll")]
+    [string]$PhyProfile = "Unspecified",
+    [ValidateSet("Yes", "No", "Unknown")]
+    [string]$HubPoe = "Unknown",
+    [string]$CableCategory = "Unknown",
+    [ValidateSet("Yes", "No", "Unknown")]
+    [string]$CableShield = "Unknown",
     [ValidateSet("EXTERNAL_ON", "OFF", "Unknown")]
     [string]$HubPower = "Unknown",
     [string]$HubPort = "Unknown",
@@ -31,6 +40,8 @@ param(
     [int]$UsbHidRawLog = 0,
     [ValidateRange(0, 1)]
     [int]$Ps5InitOutput = 0,
+    [ValidateRange(1, 60000)]
+    [int]$W5500ReleaseAfterRunningMs = 1000,
     [ValidatePattern('^[A-Za-z0-9_-]*$')]
     [string]$TestLabel = "",
     [switch]$PrepareOnly,
@@ -43,6 +54,21 @@ $ErrorActionPreference = "Stop"
 $ps5InitOutputText = if ($Ps5InitOutput -eq 0) { "NO_OUTPUT" } else { "DEFAULT" }
 $targetReadyTimeoutMs = if ($PhysicalSetup -eq "PoweredHub" -or $Firmware -eq "Ps5UsbDiagnostic") { 15000 } else { 0 }
 $poweredHubTest = if ($PhysicalSetup -eq "PoweredHub") { 1 } else { 0 }
+$modeNames = @(
+    "LEGACY_MODE_0", "LEGACY_MODE_1", "LEGACY_MODE_2", "LEGACY_MODE_3",
+    "LEGACY_MODE_4", "LEGACY_MODE_5", "LEGACY_MODE_6", "LEGACY_MODE_7",
+    "RESET_RELEASE_ONLY", "INIT_THEN_RESET_HELD", "PHY_POWER_DOWN",
+    "USB_RUNNING_RESET_HELD_CONTROL", "USB_RUNNING_THEN_RESET_RELEASE",
+    "LAN_ONLY_PHY_LINK_TIMING", "USB_RUNNING_THEN_PHY_PROFILE"
+)
+$modeName = $modeNames[$Mode]
+$failFast = if ($Mode -ge 8 -and $Mode -ne 13) { 1 } else { 0 }
+$phyProfileIds = @{
+    Unspecified = 0; HardwareStrap = 0; PowerDown = 1; Fixed10Half = 2
+    Fixed100Half = 3; Auto100Half = 4; AutoAll = 5
+}
+$phyProfileId = $phyProfileIds[$PhyProfile]
+$dualSourceStatus = if ($PowerSource -eq "DualSourceUnverified") { "UNVERIFIED" } else { "NOT_REQUESTED" }
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $isolationRoot = Join-Path $repoRoot "build-temp\usb-lan-isolation"
 $downloadPath = Join-Path $isolationRoot "downloads\USB_Host_Shield_2.0-1.7.0.zip"
@@ -235,6 +261,9 @@ function Assert-SenderIdentity {
     if ($device.PNPDeviceID -ne $expectedPnp) {
         throw "Sender identity mismatch. Expected '$expectedPnp', got '$($device.PNPDeviceID)'"
     }
+    Write-Output "ARDUINO_BOARD_LIST_BEFORE_UPLOAD"
+    & arduino-cli board list
+    if ($LASTEXITCODE -ne 0) { throw "arduino-cli board list failed before upload." }
 }
 
 function Capture-Diagnostic([string]$LogPath) {
@@ -254,7 +283,14 @@ function Capture-Diagnostic([string]$LogPath) {
             "CABLE=$Cable",
             "USB_DRIVER=$UsbDriver",
             "BATTERY_BOTTOM=$BatteryBottom",
+            "POWER_SOURCE=$PowerSource",
+            "FAIL_FAST=$failFast",
+            "DUAL_SOURCE_POWER=$dualSourceStatus",
             "HUB_MODEL=$HubModel",
+            "HUB_POE=$HubPoe",
+            "CABLE_CATEGORY=$CableCategory",
+            "CABLE_SHIELD=$CableShield",
+            "PHY_PROFILE=$PhyProfile",
             "HUB_POWER=$HubPower",
             "HUB_PORT=$HubPort",
             "HUB_PORT_SWITCH=$HubPortSwitch",
@@ -263,8 +299,10 @@ function Capture-Diagnostic([string]$LogPath) {
             "FIRMWARE=$Firmware",
             "PORT=$Port",
             "MODE=$Mode",
+            "MODE_NAME=$modeName",
             "INIT_ORDER=$InitOrder",
             "DURATION_SECONDS=$DurationSeconds",
+            "W5500_RELEASE_AFTER_RUNNING_MS=$W5500ReleaseAfterRunningMs",
             "PS5_INIT_OUTPUT=$ps5InitOutputText",
             "TEST_LABEL=$TestLabel"
         )
@@ -289,7 +327,7 @@ function Capture-Diagnostic([string]$LogPath) {
                 $writer.Flush()
                 Write-Output $record
                 if ($line -match '^TEST_COMPLETE=(PASS|FAIL)' -or
-                    $line -match '^TEST_RESULT=(NO_TARGET_HID|OSC_INIT_FAILED|SET_REPORT_PARSER_ERROR|WRONG_BOOT_MODE|PANIC|WDT)') {
+                    $line -match '^TEST_RESULT=(NO_TARGET_HID|OSC_INIT_FAILED|SET_REPORT_PARSER_ERROR|WRONG_BOOT_MODE|PANIC|WDT|LAN_INIT_FAILED|PHY_POWER_DOWN_FAILED|PHY_PROFILE_CONFIG_FAILED)') {
                     $complete = $line
                 }
             }
@@ -307,8 +345,41 @@ function Capture-Diagnostic([string]$LogPath) {
 Prepare-IsolatedLibraries
 if ($PrepareOnly) { exit 0 }
 
-if ($Mode -lt 3 -and $InitOrder -ne 0) { throw "Modes 0..2 require InitOrder 0." }
-if ($Mode -ge 3 -and $InitOrder -eq 0) { throw "Modes 3..7 require InitOrder 1 or 2." }
+if ($Mode -le 2 -and $InitOrder -ne 0) { throw "Modes 0..2 require InitOrder 0." }
+if ($Mode -ge 3 -and $Mode -le 7 -and $InitOrder -notin @(1, 2)) {
+    throw "Modes 3..7 require InitOrder 1 or 2."
+}
+if ($Mode -eq 8 -and $InitOrder -ne 0) {
+    throw "Mode 8 RESET_RELEASE_ONLY ignores ordering and requires InitOrder 0 metadata."
+}
+if ($Mode -in @(9, 10) -and $InitOrder -ne 2) {
+    throw "Modes 9 and 10 are fixed LAN_FIRST procedures and require InitOrder 2."
+}
+if ($Mode -in @(11, 12) -and $InitOrder -ne 0) {
+    throw "Modes 11 and 12 are USB-running reset procedures and require InitOrder 0."
+}
+if ($Mode -in @(13, 14) -and $InitOrder -ne 0) {
+    throw "Modes 13 and 14 require InitOrder 0."
+}
+if ($Mode -in @(13, 14) -and $PhyProfile -eq "Unspecified") {
+    throw "Modes 13 and 14 require an explicit PhyProfile."
+}
+if ($Mode -notin @(13, 14) -and $PhyProfile -ne "Unspecified") {
+    throw "PhyProfile is only valid for Modes 13 and 14."
+}
+if ($Mode -eq 13 -and ($Controller -ne "NoUsb" -or $UsbDriver -ne "None")) {
+    throw "Mode 13 requires Controller NoUsb and UsbDriver None."
+}
+if ($Mode -eq 14 -and ($Controller -ne "HoriPad" -or
+    $UsbDriver -ne "HIDUniversal" -or $ControllerVidPid -ne "0F0D/0202")) {
+    throw "Mode 14 requires HoriPad, HIDUniversal, and ControllerVidPid 0F0D/0202."
+}
+if ($PowerSource -eq "DualSourceUnverified") {
+    throw "DUAL_SOURCE_POWER=UNVERIFIED; dual-source execution is prohibited."
+}
+if ($PowerSource -eq "LanExternalSole" -and !$BuildOnly -and !$PrepareOnly) {
+    throw "LanExternalSole requires a VBUS-isolated logging path and is build-only until that path is approved."
+}
 if ($PhysicalSetup -eq "NoLanModule" -and $Mode -ge 2) {
     throw "NoLanModule is limited to Mode 0 or 1; LAN-capable modes require the LAN Module."
 }
@@ -333,7 +404,9 @@ $sourceSketchName = switch ($Firmware) {
 }
 $sketchBaseName = [System.IO.Path]::GetFileNameWithoutExtension($sourceSketchName)
 $durationMs = $DurationSeconds * 1000
-$caseName = "$firmwareSlug-mode-$Mode-order-$InitOrder-duration-$DurationSeconds-timeout-$targetReadyTimeoutMs-hub-$poweredHubTest-ps5out-$Ps5InitOutput-raw-$UsbHidRawLog"
+$releaseSlug = if ($Mode -in @(11, 12)) { "-release-$W5500ReleaseAfterRunningMs" } else { "" }
+$phySlug = if ($Mode -in @(13, 14)) { "-phy-$($PhyProfile.ToLowerInvariant())" } else { "" }
+$caseName = "$firmwareSlug-mode-$Mode-order-$InitOrder-duration-$DurationSeconds-timeout-$targetReadyTimeoutMs-hub-$poweredHubTest-ps5out-$Ps5InitOutput-raw-$UsbHidRawLog$releaseSlug$phySlug"
 $sketchDir = Join-Path $isolationRoot "sketches\$caseName\$sketchBaseName"
 $buildPath = Join-Path $isolationRoot "build\$caseName"
 $logDir = Join-Path $isolationRoot "logs"
@@ -359,6 +432,8 @@ $extraFlags = @(
     "-DUSB_HID_RAW_LOG=$UsbHidRawLog",
     "-DUSB_TARGET_READY_TIMEOUT_MS=$targetReadyTimeoutMs",
     "-DUSB_POWERED_HUB_TEST=$poweredHubTest",
+    "-DUSB_LAN_W5500_RELEASE_AFTER_RUNNING_MS=$W5500ReleaseAfterRunningMs",
+    "-DUSB_LAN_PHY_PROFILE=$phyProfileId",
     "-DPS5USB_INIT_OUTPUT=$Ps5InitOutput"
 ) -join " "
 

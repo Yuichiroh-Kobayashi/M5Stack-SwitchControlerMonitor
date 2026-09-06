@@ -50,8 +50,9 @@
 #define PIN_SPI_MISO 35
 #endif
 
-static_assert(USB_LAN_TEST_MODE >= 0 && USB_LAN_TEST_MODE <= 17,
-              "USB_LAN_TEST_MODE must be 0..17");
+static_assert(USB_LAN_TEST_MODE >= 0 &&
+              (USB_LAN_TEST_MODE <= 15 || USB_LAN_TEST_MODE == 18),
+              "USB_LAN_TEST_MODE must be 0..15 or 18");
 static_assert(USB_LAN_INIT_ORDER >= 0 && USB_LAN_INIT_ORDER <= 2,
               "USB_LAN_INIT_ORDER must be 0..2");
 static_assert(USB_LAN_TEST_MODE > 2 || USB_LAN_INIT_ORDER == 0,
@@ -72,24 +73,28 @@ static_assert((USB_LAN_TEST_MODE != 13 && USB_LAN_TEST_MODE != 14) ||
               "Modes 13 and 14 require InitOrder 0");
 static_assert(USB_LAN_TEST_MODE != 15 || USB_LAN_INIT_ORDER == 0,
               "Mode 15 requires InitOrder 0");
-static_assert(USB_LAN_TEST_MODE != 16 || USB_LAN_INIT_ORDER == 0,
-              "Mode 16 requires InitOrder 0");
-static_assert(USB_LAN_TEST_MODE != 17 || USB_LAN_INIT_ORDER == 0,
-              "Mode 17 requires InitOrder 0");
+static_assert(USB_LAN_TEST_MODE != 18 || USB_LAN_INIT_ORDER == 0,
+              "Mode 18 requires InitOrder 0");
+#if USB_LAN_TEST_MODE == 18
+static_assert(
+    USB_LAN_C1_PEER_IP_A == 192 &&
+    USB_LAN_C1_PEER_IP_B == 168 &&
+    USB_LAN_C1_PEER_IP_C == 50 &&
+    USB_LAN_C1_PEER_IP_D == 30,
+    "Mode 18 requires DG-D peer 192.168.50.30");
+#endif
 static_assert(USB_LAN_PHY_PROFILE >= 0 && USB_LAN_PHY_PROFILE <= 5,
               "USB_LAN_PHY_PROFILE must be 0..5");
 static_assert(USB_LAN_TEST_MODE != 15 || USB_LAN_PHY_PROFILE == 2,
               "Mode 15 requires the Fixed10Half PHY profile");
-static_assert(USB_LAN_TEST_MODE != 16 || USB_LAN_PHY_PROFILE == 2,
-              "Mode 16 requires the Fixed10Half PHY profile");
-static_assert(USB_LAN_TEST_MODE != 17 || USB_LAN_PHY_PROFILE == 2,
-              "Mode 17 requires the Fixed10Half PHY profile");
+static_assert(USB_LAN_TEST_MODE != 18 || USB_LAN_PHY_PROFILE == 2,
+              "Mode 18 requires the Fixed10Half PHY profile");
 static_assert(USB_LAN_W5500_RELEASE_AFTER_RUNNING_MS > 0,
               "USB_LAN_W5500_RELEASE_AFTER_RUNNING_MS must be positive");
 
-#if USB_LAN_TEST_MODE == 15 || USB_LAN_TEST_MODE == 16 || USB_LAN_TEST_MODE == 17
+#if USB_LAN_TEST_MODE == 15 || USB_LAN_TEST_MODE == 18
 #ifndef ETHERNET_LARGE_BUFFERS
-#error "Modes 15, 16 and 17 require ETHERNET_LARGE_BUFFERS"
+#error "Modes 15 and 18 require ETHERNET_LARGE_BUFFERS"
 #endif
 static_assert(MAX_SOCK_NUM == 2);
 #endif
@@ -104,8 +109,7 @@ enum class SetupPlan : uint8_t {
   kLanOnlyPhyLinkTiming,
   kUsbRunningThenPhyProfile,
   kUsbFixed10UdpTxOnly,
-  kUsbFixed10UdpEcho,
-  kUsbFixed10UdpTxRxPollEmpty,
+  kUsbFixed10UdpPositiveParseImmediateNullDiscard,
 };
 
 struct ModePlan {
@@ -140,14 +144,18 @@ constexpr ModePlan kModePlans[] = {
    SetupPlan::kUsbRunningThenPhyProfile},
   {"USB_FIXED10_UDP_TX_ONLY",false,false,false,false,true,
    SetupPlan::kUsbFixed10UdpTxOnly},
-  {"USB_FIXED10_UDP_ECHO",false,false,false,false,true,
-   SetupPlan::kUsbFixed10UdpEcho},
-  {"USB_FIXED10_UDP_TX_RX_POLL_EMPTY",false,false,false,false,true,
-   SetupPlan::kUsbFixed10UdpTxRxPollEmpty},
 };
-static_assert(sizeof(kModePlans)/sizeof(kModePlans[0]) == 18,
-              "ModePlan table must cover modes 0..17");
+static_assert(sizeof(kModePlans)/sizeof(kModePlans[0]) == 16,
+              "ModePlan table must cover modes 0..15");
+#if USB_LAN_TEST_MODE == 18
+constexpr ModePlan kModePlan={
+  "USB_FIXED10_UDP_POSITIVE_PARSE_IMMEDIATE_NULL_DISCARD",
+  false,false,false,false,true,
+  SetupPlan::kUsbFixed10UdpPositiveParseImmediateNullDiscard,
+};
+#else
 constexpr ModePlan kModePlan=kModePlans[USB_LAN_TEST_MODE];
+#endif
 
 enum class PhyProfileId : uint8_t {
   kHardwareStrap=0,
@@ -250,7 +258,14 @@ struct State {
   esp_reset_reason_t resetReason=ESP_RST_UNKNOWN;
 } state;
 
-#if USB_LAN_TEST_MODE == 15
+#if USB_LAN_TEST_MODE == 15 || USB_LAN_TEST_MODE == 18
+enum class DgDPhase : uint8_t {
+  kActive,
+  kDrain,
+  kComplete,
+  kBlocked,
+};
+
 struct C1State {
   bool w5100Init=false, networkConfig=false, linkStable=false;
   bool udpReady=false, usbStable=false, detachMarkerPrinted=false;
@@ -264,96 +279,32 @@ struct C1State {
   uint32_t schedulerMissedDeadline=0, schedulerMaxLatenessUs=0;
   uint32_t loopMaxUs=0, sequence=0, lastRuntimeCheckMs=0;
   uint32_t hidStallCount=0, hidMaxNoReportMs=0;
+#if USB_LAN_TEST_MODE == 18
+  DgDPhase dgDPhase=DgDPhase::kActive;
+  const char* dgDBlockReason="NONE";
+  int32_t rxPositiveOtherSizeFirst=0, rxPositiveOtherSizeLast=0;
+  int32_t rxNullDiscardLastReturn=0, rxLastParseResult=0;
+  uint32_t rxParseCallStartedTotal=0, rxParseCallCompletedTotal=0;
+  uint32_t rxParseZeroTotal=0, rxParsePositiveTotal=0;
+  uint32_t rxParseNegativeTotal=0, rxPositiveSize32Total=0;
+  uint32_t rxPositiveOtherSizeTotal=0;
+  uint32_t rxPreParseRemainingNonzero=0;
+  uint32_t rxNullDiscardCallTotal=0, rxNullDiscardReturnTotal=0;
+  uint32_t rxNullDiscardRequestBytesTotal=0;
+  uint32_t rxNullDiscardBytesTotal=0, rxNullDiscardFailTotal=0;
+  uint32_t rxPostDiscardRemainingNonzero=0;
+  uint32_t rxParseMaxUs=0, rxNullDiscardMaxUs=0, rxTreatmentMaxUs=0;
+  uint32_t drainTargetTxTotal=0, drainEnterMs=0, drainCompleteMs=0;
+  uint32_t drainQuietStartMs=0, drainQuietObservedMs=0;
+  uint32_t drainParsePositiveStartTotal=0;
+  uint32_t drainParsePositiveEndTotal=0, drainZeroConfirmationTotal=0;
+#endif
 } c1;
 
 struct C1BufferMap {
   uint8_t rxKb[8]{};
   uint8_t txKb[8]{};
 };
-#endif
-
-#if USB_LAN_TEST_MODE == 16
-constexpr uint8_t kC2OutstandingCapacity = 32;
-constexpr uint32_t kC2EchoWatchdogUs = 500000UL;
-
-struct C2OutstandingEntry {
-  bool inUse=false;
-  uint32_t sequence=0;
-  uint32_t sentMicros=0;
-};
-
-struct C2State {
-  bool w5100Init=false, networkConfig=false, linkStable=false;
-  bool udpReady=false, usbStable=false, detachMarkerPrinted=false;
-  bool finalPhyOk=false, finalVersionOk=false, finalBufferMapOk=false;
-  uint8_t version=0;
-  uint32_t trialStartMs=0, nextDeadlineUs=0, lastTxUs=0;
-  uint32_t lastHidReportMs=0, lastHidReportTotal=0;
-  uint32_t udpTxTotal=0, udpTxFail=0, udpBeginCount=0, udpBeginFail=0;
-  uint32_t udpBeginMaxUs=0, udpBeginPacketMaxUs=0, udpWriteMaxUs=0;
-  uint32_t udpEndPacketMaxUs=0, udpMaxGapUs=0;
-  uint32_t schedulerMissedDeadline=0, schedulerMaxLatenessUs=0;
-  uint32_t loopMaxUs=0, sequence=0, lastRuntimeCheckMs=0;
-  uint32_t hidStallCount=0, hidMaxNoReportMs=0;
-
-  C2OutstandingEntry outstanding[kC2OutstandingCapacity];
-  uint32_t udpRxTotal=0, udpRxInvalid=0;
-  uint32_t udpEchoValidTotal=0, echoLateAtOrAfterWatchdog=0;
-  uint32_t outstandingTableOverflow=0;
-  uint32_t echoRttMinUs=0xFFFFFFFFUL, echoRttMaxUs=0;
-  uint32_t echoRttBucket0_5=0, echoRttBucket5_10=0, echoRttBucket10_20=0,
-           echoRttBucket20_50=0, echoRttBucket50_100=0,
-           echoRttBucket100_200=0, echoRttBucket200_400=0,
-           echoRttBucket400_500=0;
-
-  // Strict per-field echo validation counters (hard-zero contract fields).
-  uint32_t echoMagicError=0, echoVersionError=0, echoGateError=0,
-           echoLengthError=0, echoCrcError=0, echoPayloadError=0,
-           echoFlagsError=0, echoSourceIpError=0, echoSourcePortError=0,
-           echoUnmatched=0, echoTimestampMismatch=0;
-
-  // Condition-driven ACTIVE -> DRAIN -> finish state machine.
-  bool draining=false;
-  uint32_t drainStartMs=0, activeRuntimeMs=0, drainRuntimeMs=0;
-  uint32_t outstandingFinal=0;
-
-  const char* pendingFailReason=nullptr;
-} c2;
-#endif
-
-#if USB_LAN_TEST_MODE == 17
-// Gate DG-A (Mode 17, USB_FIXED10_UDP_TX_RX_POLL_EMPTY) isolates a single changed
-// variable against the Gate C1 (Mode 15) accepted baseline: an empty
-// udp.parsePacket() poll, at most once per loop, with udp.read() never called. It
-// reuses the Gate C1 architecture and C1UD wire format verbatim (LAN-first
-// Fixed10Half bring-up, buffer-map and PHY readback discipline, shared-SPI CS
-// sequencing, HID stall derivation, deadline-skip scheduler) and is implemented as a
-// separate, additive block so that Mode 15 and Mode 16 are never touched. See
-// docs/usb-lan-gate-dg-a-contract.md for the canonical requirements this block
-// implements.
-struct DgAState {
-  bool w5100Init=false, networkConfig=false, linkStable=false;
-  bool udpReady=false, usbStable=false, detachMarkerPrinted=false;
-  bool finalPhyOk=false, finalVersionOk=false, finalBufferMapOk=false;
-  uint8_t version=0;
-  uint32_t trialStartMs=0, nextDeadlineUs=0, lastTxUs=0;
-  uint32_t lastHidReportMs=0, lastHidReportTotal=0;
-  uint32_t udpTxTotal=0, udpTxFail=0, udpBeginCount=0, udpBeginFail=0;
-  uint32_t udpBeginMaxUs=0, udpBeginPacketMaxUs=0, udpWriteMaxUs=0;
-  uint32_t udpEndPacketMaxUs=0, udpMaxGapUs=0;
-  uint32_t schedulerMissedDeadline=0, schedulerMaxLatenessUs=0;
-  uint32_t loopMaxUs=0, sequence=0, lastRuntimeCheckMs=0;
-  uint32_t hidStallCount=0, hidMaxNoReportMs=0;
-
-  // DG-A-specific: empty-parsePacket() isolation evidence. rxReadCallTotal and
-  // rxReadBytesTotal are never incremented anywhere in this block (udp.read() is
-  // never called) -- they exist purely as evidence counters proving the read path is
-  // unreached, verified by static source review.
-  uint32_t rxPollCallTotal=0, rxPollPositiveTotal=0, rxPollNegativeError=0;
-  uint32_t rxReadCallTotal=0, rxReadBytesTotal=0, rxPollMaxUs=0;
-
-  const char* pendingFailReason=nullptr;
-} dgA;
 #endif
 
 class DiagnosticParser : public HIDReportParser {
@@ -412,7 +363,7 @@ inline void releaseExternalSpiDevices(){
 }
 
 void prepareExternalPins(){
-#if USB_LAN_TEST_MODE == 15 || USB_LAN_TEST_MODE == 16
+#if USB_LAN_TEST_MODE == 15 || USB_LAN_TEST_MODE == 18
   pinMode(USB_HOST_SHIELD_SS_GPIO,OUTPUT);
   digitalWrite(USB_HOST_SHIELD_SS_GPIO,HIGH);
   pinMode(Config::kLanCs,OUTPUT);
@@ -1188,12 +1139,18 @@ void stopTest(bool passed,uint32_t now){
     (unsigned long)state.phyPollMaxUs);
 }
 
-#if USB_LAN_TEST_MODE == 15
+#if USB_LAN_TEST_MODE == 15 || USB_LAN_TEST_MODE == 18
 void c1ScopeMarker(const char* event,const char* result=nullptr){
+#if USB_LAN_TEST_MODE == 18
+  constexpr const char* kTrialName="DG-D";
+#else
+  constexpr const char* kTrialName="C1";
+#endif
   if(result){
-    Serial.printf("SCOPE_MARKER trial=C1 event=%s result=%s\n",event,result);
+    Serial.printf("SCOPE_MARKER trial=%s event=%s result=%s\n",
+                  kTrialName,event,result);
   }else{
-    Serial.printf("SCOPE_MARKER trial=C1 event=%s\n",event);
+    Serial.printf("SCOPE_MARKER trial=%s event=%s\n",kTrialName,event);
   }
 }
 
@@ -1327,17 +1284,24 @@ void c1FailSetup(const char* reason){
   state.lanAccessAllowed=false;
   state.stopped=true;
   Serial.printf("C1_SETUP_FAIL=1 REASON=%s\n",reason);
-  Serial.printf("TEST_COMPLETE=FAIL TEST_MODE=15 TEST_MODE_NAME=%s "
+  Serial.printf("TEST_COMPLETE=FAIL TEST_MODE=%d TEST_MODE_NAME=%s "
                 "REASON=%s FINAL_USB_STATE=%02X FINAL_HID_READY=%u "
-                "HID_READY_DROP=%lu\n",kModePlan.name,reason,
+                "HID_READY_DROP=%lu\n",USB_LAN_TEST_MODE,kModePlan.name,reason,
                 state.usbTaskState,state.hidReady,
                 (unsigned long)state.hidReadyDrop);
   c1ScopeMarker("TRIAL_COMPLETE","FAIL");
 }
 
 bool initializeC1(){
+#if USB_LAN_TEST_MODE == 18
+  Serial.println("DG_D_ARCHITECTURE=LAN_FIRST FIXED10HALF "
+                 "USB_HEALTH_RX_NULL_DISCARD_TX");
+  Serial.println("DG_D_TREATMENT=POSITIVE_PARSE_IMMEDIATE_NULL_DISCARD "
+                 "PAYLOAD_BYTES=32 NON_NULL_PAYLOAD_READ=0");
+#else
   Serial.println("C1_ARCHITECTURE=LAN_FIRST FIXED10HALF UDP_TX_ONLY "
                  "ETHERNET_BEGIN=0 DHCP=0 SCOPE_RESULT=NOT_CAPTURED");
+#endif
   Serial.printf("C1_PEER_IP=%u.%u.%u.%u PEER_PORT=%u "
                 "PEER_IDENTITY=PC_ONLY_REQUIRED\n",Config::kC1PeerIp[0],
                 Config::kC1PeerIp[1],Config::kC1PeerIp[2],
@@ -1592,8 +1556,95 @@ void c1PrintStatistics(const char* prefix){
                 (unsigned long)c1.hidMaxNoReportMs);
 }
 
+#if USB_LAN_TEST_MODE == 18
+constexpr uint32_t DG_D_DRAIN_QUIET_REQUIRED_MS=100;
+constexpr uint32_t DG_D_DRAIN_TIMEOUT_MS=1000;
+
+const char* dgDPhaseText(){
+  switch(c1.dgDPhase){
+    case DgDPhase::kActive:return "ACTIVE";
+    case DgDPhase::kDrain:return "DRAIN";
+    case DgDPhase::kComplete:return "COMPLETE";
+    case DgDPhase::kBlocked:return "BLOCKED";
+  }
+  return "BLOCKED";
+}
+
+void dgDPrintStatistics(const char* prefix){
+  Serial.printf("%s RX_PARSE_CALL_STARTED_TOTAL=%lu "
+                "RX_PARSE_CALL_COMPLETED_TOTAL=%lu RX_PARSE_ZERO_TOTAL=%lu "
+                "RX_PARSE_POSITIVE_TOTAL=%lu RX_PARSE_NEGATIVE_TOTAL=%lu "
+                "RX_POSITIVE_SIZE_32_TOTAL=%lu "
+                "RX_POSITIVE_OTHER_SIZE_TOTAL=%lu "
+                "RX_POSITIVE_OTHER_SIZE_FIRST=%ld "
+                "RX_POSITIVE_OTHER_SIZE_LAST=%ld "
+                "RX_PRE_PARSE_REMAINING_NONZERO=%lu "
+                "RX_NULL_DISCARD_CALL_TOTAL=%lu "
+                "RX_NULL_DISCARD_RETURN_TOTAL=%lu "
+                "RX_NULL_DISCARD_REQUEST_BYTES_TOTAL=%lu "
+                "RX_NULL_DISCARD_BYTES_TOTAL=%lu "
+                "RX_NULL_DISCARD_FAIL_TOTAL=%lu "
+                "RX_NULL_DISCARD_LAST_RETURN=%ld "
+                "RX_POST_DISCARD_REMAINING_NONZERO=%lu "
+                "RX_PARSE_MAX_US=%lu RX_NULL_DISCARD_MAX_US=%lu "
+                "RX_TREATMENT_MAX_US=%lu DG_D_PHASE=%s\n",prefix,
+                (unsigned long)c1.rxParseCallStartedTotal,
+                (unsigned long)c1.rxParseCallCompletedTotal,
+                (unsigned long)c1.rxParseZeroTotal,
+                (unsigned long)c1.rxParsePositiveTotal,
+                (unsigned long)c1.rxParseNegativeTotal,
+                (unsigned long)c1.rxPositiveSize32Total,
+                (unsigned long)c1.rxPositiveOtherSizeTotal,
+                (long)c1.rxPositiveOtherSizeFirst,
+                (long)c1.rxPositiveOtherSizeLast,
+                (unsigned long)c1.rxPreParseRemainingNonzero,
+                (unsigned long)c1.rxNullDiscardCallTotal,
+                (unsigned long)c1.rxNullDiscardReturnTotal,
+                (unsigned long)c1.rxNullDiscardRequestBytesTotal,
+                (unsigned long)c1.rxNullDiscardBytesTotal,
+                (unsigned long)c1.rxNullDiscardFailTotal,
+                (long)c1.rxNullDiscardLastReturn,
+                (unsigned long)c1.rxPostDiscardRemainingNonzero,
+                (unsigned long)c1.rxParseMaxUs,
+                (unsigned long)c1.rxNullDiscardMaxUs,
+                (unsigned long)c1.rxTreatmentMaxUs,dgDPhaseText());
+  Serial.printf("%s DRAIN_TARGET_TX_TOTAL=%lu DRAIN_ENTER_MS=%lu "
+                "DRAIN_COMPLETE_MS=%lu DRAIN_TIMEOUT_MS=%lu "
+                "DRAIN_QUIET_REQUIRED_MS=%lu DRAIN_QUIET_OBSERVED_MS=%lu "
+                "DRAIN_PARSE_POSITIVE_START_TOTAL=%lu "
+                "DRAIN_PARSE_POSITIVE_END_TOTAL=%lu "
+                "DRAIN_ZERO_CONFIRMATION_TOTAL=%lu DRAIN_RESULT=%s "
+                "DRAIN_BLOCK_REASON=%s\n",prefix,
+                (unsigned long)c1.drainTargetTxTotal,
+                (unsigned long)c1.drainEnterMs,
+                (unsigned long)c1.drainCompleteMs,
+                (unsigned long)DG_D_DRAIN_TIMEOUT_MS,
+                (unsigned long)DG_D_DRAIN_QUIET_REQUIRED_MS,
+                (unsigned long)c1.drainQuietObservedMs,
+                (unsigned long)c1.drainParsePositiveStartTotal,
+                (unsigned long)c1.drainParsePositiveEndTotal,
+                (unsigned long)c1.drainZeroConfirmationTotal,
+                c1.dgDPhase==DgDPhase::kComplete?"PASS":
+                  (c1.dgDPhase==DgDPhase::kBlocked?"BLOCKED":"PENDING"),
+                c1.dgDBlockReason);
+}
+#endif
+
 void c1Finish(bool passed,const char* reason){
   if(state.stopped)return;
+#if USB_LAN_TEST_MODE == 18
+  if(passed){
+    c1.dgDPhase=DgDPhase::kComplete;
+    c1.dgDBlockReason="NONE";
+  }else{
+    c1.dgDPhase=DgDPhase::kBlocked;
+    c1.dgDBlockReason=reason;
+  }
+  c1.drainParsePositiveEndTotal=c1.rxParsePositiveTotal;
+  if(c1.drainQuietStartMs!=0){
+    c1.drainQuietObservedMs=millis()-c1.drainQuietStartMs;
+  }
+#endif
   updateUsbIdentity();
   captureMaxSnapshot();
   c1.finalPhyOk=c1.w5100Init&&c1CheckFixed10Half(true);
@@ -1601,15 +1652,37 @@ void c1Finish(bool passed,const char* reason){
   c1.finalVersionOk=c1.version==0x04;
   c1.finalBufferMapOk=c1.w5100Init&&c1CheckBufferMap("C1_TRIAL_END");
   const bool finalUsbOk=state.usbTaskState==0x90&&state.hidReady;
-  const bool runtimePass=passed&&c1.udpTxTotal>0&&c1.udpTxFail==0&&
+  bool runtimePass=passed&&c1.udpTxTotal>0&&c1.udpTxFail==0&&
     c1.hidStallCount==0&&state.hidReadyDrop==0&&finalUsbOk&&
     c1.finalPhyOk&&c1.finalVersionOk&&c1.finalBufferMapOk&&
     state.maxSpiReadMismatch==0&&!state.spiCorruptionSuspected;
+#if USB_LAN_TEST_MODE == 18
+  runtimePass=runtimePass&&c1.dgDPhase==DgDPhase::kComplete&&
+    c1.schedulerMissedDeadline==0&&c1.rxParsePositiveTotal>0&&
+    c1.rxParseCallStartedTotal==c1.rxParseCallCompletedTotal&&
+    c1.rxParseCallCompletedTotal==c1.rxParseZeroTotal+
+      c1.rxParsePositiveTotal+c1.rxParseNegativeTotal&&
+    c1.rxParseNegativeTotal==0&&c1.rxPositiveOtherSizeTotal==0&&
+    c1.rxPositiveSize32Total==c1.rxParsePositiveTotal&&
+    c1.rxPreParseRemainingNonzero==0&&
+    c1.rxNullDiscardCallTotal==c1.rxParsePositiveTotal&&
+    c1.rxNullDiscardReturnTotal==c1.rxParsePositiveTotal&&
+    c1.rxNullDiscardRequestBytesTotal==32UL*c1.rxParsePositiveTotal&&
+    c1.rxNullDiscardBytesTotal==32UL*c1.rxParsePositiveTotal&&
+    c1.rxNullDiscardFailTotal==0&&
+    c1.rxPostDiscardRemainingNonzero==0&&
+    c1.rxParsePositiveTotal==c1.drainTargetTxTotal&&
+    c1.rxNullDiscardReturnTotal==c1.drainTargetTxTotal&&
+    c1.drainQuietObservedMs>=DG_D_DRAIN_QUIET_REQUIRED_MS;
+#endif
   releaseExternalSpiDevices();
   state.lanAccessAllowed=false;
   state.stopped=true;
   c1PrintStatistics("C1_FINAL");
-  Serial.printf("TEST_COMPLETE=%s TEST_MODE=15 TEST_MODE_NAME=%s "
+#if USB_LAN_TEST_MODE == 18
+  dgDPrintStatistics("DG_D_FINAL");
+#endif
+  Serial.printf("TEST_COMPLETE=%s TEST_MODE=%d TEST_MODE_NAME=%s "
                 "DURATION_MS=%lu TRIAL_RUNTIME_MS=%lu REASON=%s "
                 "FINAL_USB_STATE=%02X FINAL_HID_READY=%u "
                 "HID_READY_DROP=%lu HID_STALL_COUNT=%lu "
@@ -1618,7 +1691,7 @@ void c1Finish(bool passed,const char* reason){
                 "FINAL_BUFFER_MAP_OK=%u VERSIONR=%02X "
                 "MAX_REGISTER_TRIPLE_READ_MISMATCH=%lu "
                 "SPI_CORRUPTION_SUSPECTED=%u SCOPE_RESULT=NOT_CAPTURED\n",
-                runtimePass?"PASS":"FAIL",kModePlan.name,
+                runtimePass?"PASS":"FAIL",USB_LAN_TEST_MODE,kModePlan.name,
                 (unsigned long)(millis()-c1.trialStartMs),
                 (unsigned long)(millis()-c1.trialStartMs),reason,
                 state.usbTaskState,
@@ -1631,6 +1704,121 @@ void c1Finish(bool passed,const char* reason){
                 state.spiCorruptionSuspected);
   c1ScopeMarker("TRIAL_COMPLETE",runtimePass?"PASS":"FAIL");
 }
+
+#if USB_LAN_TEST_MODE == 18
+bool dgDProcessIncomingEcho(){
+  const int preRemaining=udp.available();
+  if(preRemaining!=0){
+    ++c1.rxPreParseRemainingNonzero;
+    c1Finish(false,"BLOCKED_DG_D_PRE_PARSE_REMAINING_NONZERO");
+    return false;
+  }
+
+  const uint32_t treatmentStartUs=micros();
+  prepareForLanAccess();
+  ++c1.rxParseCallStartedTotal;
+  const uint32_t parseStartUs=micros();
+  const int packetSize=udp.parsePacket();
+  c1UpdateMax(micros()-parseStartUs,c1.rxParseMaxUs);
+  ++c1.rxParseCallCompletedTotal;
+  c1.rxLastParseResult=packetSize;
+
+  if(packetSize==0){
+    ++c1.rxParseZeroTotal;
+    releaseExternalSpiDevices();
+    c1UpdateMax(micros()-treatmentStartUs,c1.rxTreatmentMaxUs);
+    return true;
+  }
+  if(packetSize<0){
+    ++c1.rxParseNegativeTotal;
+    releaseExternalSpiDevices();
+    c1UpdateMax(micros()-treatmentStartUs,c1.rxTreatmentMaxUs);
+    c1Finish(false,"BLOCKED_DG_D_PARSE_API_NEGATIVE");
+    return false;
+  }
+
+  ++c1.rxParsePositiveTotal;
+  if(packetSize!=32){
+    ++c1.rxPositiveOtherSizeTotal;
+    if(c1.rxPositiveOtherSizeTotal==1){
+      c1.rxPositiveOtherSizeFirst=packetSize;
+    }
+    c1.rxPositiveOtherSizeLast=packetSize;
+    releaseExternalSpiDevices();
+    c1UpdateMax(micros()-treatmentStartUs,c1.rxTreatmentMaxUs);
+    c1Finish(false,"BLOCKED_DG_D_POSITIVE_SIZE_NOT_32");
+    return false;
+  }
+
+  ++c1.rxPositiveSize32Total;
+  ++c1.rxNullDiscardCallTotal;
+  c1.rxNullDiscardRequestBytesTotal+=32;
+  const uint32_t discardStartUs=micros();
+  const int discarded=udp.read(static_cast<uint8_t*>(nullptr),
+                               static_cast<size_t>(packetSize));
+  c1UpdateMax(micros()-discardStartUs,c1.rxNullDiscardMaxUs);
+  ++c1.rxNullDiscardReturnTotal;
+  c1.rxNullDiscardLastReturn=discarded;
+  if(discarded>0){
+    c1.rxNullDiscardBytesTotal+=static_cast<uint32_t>(discarded);
+  }
+  const bool discardOk=discarded==32;
+  if(!discardOk)++c1.rxNullDiscardFailTotal;
+  releaseExternalSpiDevices();
+  c1UpdateMax(micros()-treatmentStartUs,c1.rxTreatmentMaxUs);
+
+  const int postRemaining=udp.available();
+  const bool postOk=postRemaining==0;
+  if(!postOk)++c1.rxPostDiscardRemainingNonzero;
+  if(!discardOk){
+    c1Finish(false,"BLOCKED_DG_D_NULL_DISCARD_RETURN_MISMATCH");
+    return false;
+  }
+  if(!postOk){
+    c1Finish(false,"BLOCKED_DG_D_POST_DISCARD_REMAINING_NONZERO");
+    return false;
+  }
+  return true;
+}
+
+void dgDEnterDrain(uint32_t nowMs){
+  c1.dgDPhase=DgDPhase::kDrain;
+  c1.drainTargetTxTotal=c1.udpTxTotal;
+  c1.drainEnterMs=nowMs;
+  c1.drainParsePositiveStartTotal=c1.rxParsePositiveTotal;
+  c1.drainQuietStartMs=0;
+  Serial.printf("DG_D_DRAIN_ENTER=1 DRAIN_TARGET_TX_TOTAL=%lu "
+                "DRAIN_ENTER_MS=%lu\n",
+                (unsigned long)c1.drainTargetTxTotal,
+                (unsigned long)c1.drainEnterMs);
+}
+
+bool dgDServiceDrain(uint32_t nowMs){
+  if(c1.rxParsePositiveTotal>c1.drainTargetTxTotal ||
+     c1.rxNullDiscardReturnTotal>c1.drainTargetTxTotal){
+    c1Finish(false,"BLOCKED_DG_D_RECONCILIATION_MISMATCH");
+    return false;
+  }
+  const bool countsEqual=
+    c1.rxParsePositiveTotal==c1.drainTargetTxTotal&&
+    c1.rxNullDiscardReturnTotal==c1.drainTargetTxTotal;
+  if(countsEqual){
+    if(c1.drainQuietStartMs==0)c1.drainQuietStartMs=nowMs;
+    if(c1.rxLastParseResult==0)++c1.drainZeroConfirmationTotal;
+    c1.drainQuietObservedMs=nowMs-c1.drainQuietStartMs;
+    if(c1.drainQuietObservedMs>=DG_D_DRAIN_QUIET_REQUIRED_MS){
+      c1.drainCompleteMs=nowMs;
+      c1Finish(true,"DRAIN_COMPLETE");
+      return false;
+    }
+  }
+  if(nowMs-c1.drainEnterMs>=DG_D_DRAIN_TIMEOUT_MS){
+    c1Finish(false,"BLOCKED_DG_D_DRAIN_TIMEOUT");
+    return false;
+  }
+  return true;
+}
+#endif
 
 void loopC1(){
   const uint32_t loopStartUs=micros();
@@ -1671,9 +1859,22 @@ void loopC1(){
     }
   }
 
+#if USB_LAN_TEST_MODE == 18
+  if(!dgDProcessIncomingEcho())return;
+  if(c1.dgDPhase==DgDPhase::kActive &&
+     nowMs-c1.trialStartMs>=USB_LAN_TEST_DURATION_MS){
+    dgDEnterDrain(nowMs);
+  }
+  if(c1.dgDPhase==DgDPhase::kDrain && !dgDServiceDrain(nowMs))return;
+#endif
+
   const uint32_t nowUs=micros();
   const int32_t lateness=static_cast<int32_t>(nowUs-c1.nextDeadlineUs);
-  if(lateness>=0){
+  if(lateness>=0
+#if USB_LAN_TEST_MODE == 18
+     && c1.dgDPhase==DgDPhase::kActive
+#endif
+  ){
     const uint32_t latenessUs=static_cast<uint32_t>(lateness);
     c1UpdateMax(latenessUs,c1.schedulerMaxLatenessUs);
     const uint32_t skipped=latenessUs/20000UL;
@@ -1686,1391 +1887,15 @@ void loopC1(){
   if(nowMs-state.lastSerialMs>=1000){
     state.lastSerialMs=nowMs;
     c1PrintStatistics("C1_DIAG");
+#if USB_LAN_TEST_MODE == 18
+    dgDPrintStatistics("DG_D_DIAG");
+#endif
   }
+#if USB_LAN_TEST_MODE == 15
   if(nowMs-c1.trialStartMs>=USB_LAN_TEST_DURATION_MS){
     c1Finish(c1.udpTxFail==0,"DURATION_COMPLETE");
   }
-}
 #endif
-
-#if USB_LAN_TEST_MODE == 16
-// Gate C2 (Mode 16, USB_FIXED10_UDP_ECHO) reuses the Gate C1 (Mode 15)
-// architecture pattern verbatim (LAN-first Fixed10Half bring-up, buffer-map
-// and PHY readback discipline, shared-SPI CS sequencing, HID stall
-// derivation, deadline-skip scheduler). It is implemented as a separate,
-// additive block so that Mode 15 itself is never touched. See
-// docs/usb-lan-gate-c2-contract.md for the canonical requirements this
-// block implements (echo watchdog, RTT evidence buckets, fixed-capacity
-// outstanding-send table).
-void c2ScopeMarker(const char* event,const char* result=nullptr){
-  if(result){
-    Serial.printf("SCOPE_MARKER trial=C2 event=%s result=%s\n",event,result);
-  }else{
-    Serial.printf("SCOPE_MARKER trial=C2 event=%s\n",event);
-  }
-}
-
-uint8_t c2ReadVersion(){
-  prepareForLanAccess();
-  SPI.beginTransaction(SPI_ETHERNET_SETTINGS);
-  const uint8_t value=W5100.readVERSIONR_W5500();
-  SPI.endTransaction();
-  releaseExternalSpiDevices();
-  return value;
-}
-
-bool c2CheckBufferMap(const char* reason){
-  uint8_t rxKb[8]{};
-  uint8_t txKb[8]{};
-  prepareForLanAccess();
-  SPI.beginTransaction(SPI_ETHERNET_SETTINGS);
-  for(uint8_t socket=0;socket<8;++socket){
-    rxKb[socket]=W5100.readSnRX_SIZE(socket);
-    txKb[socket]=W5100.readSnTX_SIZE(socket);
-  }
-  SPI.endTransaction();
-  releaseExternalSpiDevices();
-  bool ok=W5100.SSIZE==8192 && W5100.SMASK==8191;
-  Serial.printf("BUFFER_MAP_CHECK reason=%s\n",reason);
-  for(uint8_t socket=0;socket<8;++socket){
-    Serial.printf("S%u_RX=%u S%u_TX=%u\n",socket,rxKb[socket],
-                  socket,txKb[socket]);
-    const uint8_t expected=socket<2?8:0;
-    if(rxKb[socket]!=expected||txKb[socket]!=expected)ok=false;
-  }
-  Serial.printf("SSIZE=%u\nSMASK=%u\nCH_BASE_MSB_INDIRECT_OK=%u\n"
-                "BUFFER_MAP_OK=%u\n",W5100.SSIZE,W5100.SMASK,ok,ok);
-  return ok;
-}
-
-bool c2CheckFixed10Half(bool requireLink,uint8_t* valueOut=nullptr){
-  constexpr uint8_t kPhyReset=0x80;
-  constexpr uint8_t kOperationModeFromRegister=0x40;
-  constexpr uint8_t kOperationModeMask=0x38;
-  constexpr uint8_t kDuplex=0x04;
-  constexpr uint8_t kSpeed=0x02;
-  constexpr uint8_t kLink=0x01;
-  const uint8_t value=readW5500PhyCfgr();
-  if(valueOut)*valueOut=value;
-  const bool profileOk=(value&static_cast<uint8_t>(kPhyReset|
-      kOperationModeFromRegister|kOperationModeMask))==
-      static_cast<uint8_t>(kPhyReset|kOperationModeFromRegister);
-  const bool speedOk=(value&kSpeed)==0;
-  const bool duplexOk=(value&kDuplex)==0;
-  const bool linkOk=(value&kLink)!=0;
-  const bool ok=profileOk&&speedOk&&duplexOk&&(!requireLink||linkOk);
-  Serial.printf("C2_PHY_CHECK RAW=%02X RST=%u OPMD=%u OPMDC=%u "
-                "SPEED_MBPS=%u DUPLEX=%s LINK=%u REQUIRE_LINK=%u OK=%u\n",
-                value,(value>>7)&1,(value>>6)&1,(value>>3)&7,
-                speedOk?10:100,duplexOk?"HALF":"FULL",linkOk,
-                requireLink,ok);
-  return ok;
-}
-
-bool c2ConfigureNetwork(){
-  prepareForLanAccess();
-  Ethernet.setMACAddress(Config::kMac);
-  releaseExternalSpiDevices();
-  prepareForLanAccess();
-  Ethernet.setLocalIP(Config::kLocalIp);
-  releaseExternalSpiDevices();
-  prepareForLanAccess();
-  Ethernet.setGatewayIP(Config::kGateway);
-  releaseExternalSpiDevices();
-  prepareForLanAccess();
-  Ethernet.setSubnetMask(Config::kSubnet);
-  releaseExternalSpiDevices();
-  prepareForLanAccess();
-  Ethernet.setDnsServerIP(Config::kDns);
-  releaseExternalSpiDevices();
-
-  uint8_t actualMac[6]{};
-  prepareForLanAccess();
-  Ethernet.MACAddress(actualMac);
-  releaseExternalSpiDevices();
-  prepareForLanAccess();
-  const IPAddress actualIp=Ethernet.localIP();
-  releaseExternalSpiDevices();
-  prepareForLanAccess();
-  const IPAddress actualGateway=Ethernet.gatewayIP();
-  releaseExternalSpiDevices();
-  prepareForLanAccess();
-  const IPAddress actualSubnet=Ethernet.subnetMask();
-  releaseExternalSpiDevices();
-  prepareForLanAccess();
-  const IPAddress actualDns=Ethernet.dnsServerIP();
-  releaseExternalSpiDevices();
-  bool macOk=true;
-  for(uint8_t index=0;index<6;++index){
-    if(actualMac[index]!=Config::kMac[index])macOk=false;
-  }
-  const bool ok=macOk&&actualIp==Config::kLocalIp&&
-                actualGateway==Config::kGateway&&
-                actualSubnet==Config::kSubnet&&actualDns==Config::kDns;
-  state.actualIp=actualIp;
-  Serial.printf("C2_NETWORK_READBACK MAC=%02X:%02X:%02X:%02X:%02X:%02X "
-                "LOCAL_IP=%u.%u.%u.%u GATEWAY=%u.%u.%u.%u "
-                "SUBNET=%u.%u.%u.%u DNS=%u.%u.%u.%u OK=%u\n",
-                actualMac[0],actualMac[1],actualMac[2],actualMac[3],
-                actualMac[4],actualMac[5],actualIp[0],actualIp[1],
-                actualIp[2],actualIp[3],actualGateway[0],actualGateway[1],
-                actualGateway[2],actualGateway[3],actualSubnet[0],
-                actualSubnet[1],actualSubnet[2],actualSubnet[3],actualDns[0],
-                actualDns[1],actualDns[2],actualDns[3],ok);
-  return ok;
-}
-
-bool c2AuditUdpSocket(){
-  uint8_t udpCount=0;
-  prepareForLanAccess();
-  SPI.beginTransaction(SPI_ETHERNET_SETTINGS);
-  for(uint8_t socket=0;socket<8;++socket){
-    const uint8_t status=W5100.readSnSR(socket);
-    Serial.printf("C2_SOCKET_STATUS S%u=%02X\n",socket,status);
-    if(status==SnSR::UDP)++udpCount;
-  }
-  SPI.endTransaction();
-  releaseExternalSpiDevices();
-  Serial.printf("C2_UDP_SOCKET_COUNT=%u OK=%u\n",udpCount,udpCount==1);
-  return udpCount==1;
-}
-
-void c2FailSetup(const char* reason){
-  if(state.stopped)return;
-  releaseExternalSpiDevices();
-  state.lanAccessAllowed=false;
-  state.stopped=true;
-  Serial.printf("C2_SETUP_FAIL=1 REASON=%s\n",reason);
-  Serial.printf("TEST_COMPLETE=FAIL TEST_MODE=16 TEST_MODE_NAME=%s "
-                "REASON=%s FINAL_USB_STATE=%02X FINAL_HID_READY=%u "
-                "HID_READY_DROP=%lu\n",kModePlan.name,reason,
-                state.usbTaskState,state.hidReady,
-                (unsigned long)state.hidReadyDrop);
-  c2ScopeMarker("TRIAL_COMPLETE","FAIL");
-}
-
-bool initializeC2(){
-  Serial.println("C2_ARCHITECTURE=LAN_FIRST FIXED10HALF UDP_ECHO "
-                 "ETHERNET_BEGIN=0 DHCP=0 SCOPE_RESULT=NOT_CAPTURED");
-  Serial.printf("C2_PEER_IP=%u.%u.%u.%u PEER_PORT=%u "
-                "PEER_IDENTITY=PC_ONLY_REQUIRED\n",Config::kC1PeerIp[0],
-                Config::kC1PeerIp[1],Config::kC1PeerIp[2],
-                Config::kC1PeerIp[3],Config::kPort);
-  for(uint8_t index=0;index<kC2OutstandingCapacity;++index){
-    c2.outstanding[index].inUse=false;
-    c2.outstanding[index].sequence=0;
-    c2.outstanding[index].sentMicros=0;
-  }
-  c2.echoRttMinUs=0xFFFFFFFFUL;
-  releaseExternalSpiDevices();
-  Serial.printf("SPI_INIT_OWNER=C2_LAN COUNT=1 CALL=SPI.begin(%u,%u,%u,-1)\n",
-                PIN_SPI_SCK,PIN_SPI_MISO,PIN_SPI_MOSI);
-  SPI.begin(PIN_SPI_SCK,PIN_SPI_MISO,PIN_SPI_MOSI,-1);
-  c2ScopeMarker("PRE_RESET");
-  const uint32_t resetLowUs=micros()-state.lanResetLowUs;
-  if(resetLowUs<500){
-    delayMicroseconds(500-resetLowUs);
-  }
-  digitalWrite(Config::kLanReset,HIGH);
-  state.w5500ResetReleased=true;
-  state.resetReleaseMs=millis();
-  state.resetReleaseUs=micros();
-  c2ScopeMarker("RESET_RELEASE");
-  delayMicroseconds(1000);
-
-  prepareForLanAccess();
-  Ethernet.init(Config::kLanCs);
-  releaseExternalSpiDevices();
-  prepareForLanAccess();
-  const uint32_t initStartUs=micros();
-  const uint8_t initResult=W5100.init(1);
-  const uint32_t initElapsedUs=micros()-initStartUs;
-  releaseExternalSpiDevices();
-  c2.w5100Init=initResult==1;
-  const uint8_t chip=W5100.getChip();
-  c2.version=c2ReadVersion();
-  Serial.printf("C2_W5100_INIT_COUNT=1 RESULT=%u DURATION_US=%lu CHIP=%u "
-                "VERSIONR=%02X SSIZE=%u SMASK=%u\n",initResult,
-                (unsigned long)initElapsedUs,chip,c2.version,W5100.SSIZE,
-                W5100.SMASK);
-  if(!c2.w5100Init){c2FailSetup("W5100_INIT");return false;}
-  if(chip!=55){c2FailSetup("CHIP_ID");return false;}
-  if(c2.version!=0x04){c2FailSetup("VERSIONR");return false;}
-  if(!c2CheckBufferMap("C2_INIT_AFTER_W5100_INIT")){
-    c2FailSetup("BUFFER_MAP_INIT");return false;
-  }
-
-  if(!applyW5500PhyProfile(
-       kPhyProfiles[static_cast<uint8_t>(PhyProfileId::kFixed10Half)])){
-    c2FailSetup("PHY_PROFILE");return false;
-  }
-  c2ScopeMarker("PHY_PROFILE_APPLIED");
-  if(!c2CheckFixed10Half(false)){
-    c2FailSetup("PHY_PROFILE_READBACK");return false;
-  }
-  if(!c2CheckBufferMap("C2_AFTER_FIXED10")){
-    c2FailSetup("BUFFER_MAP_FIXED10");return false;
-  }
-
-  c2.networkConfig=c2ConfigureNetwork();
-  if(!c2.networkConfig){c2FailSetup("NETWORK_CONFIG");return false;}
-  if(!c2CheckFixed10Half(false)){
-    c2FailSetup("PHY_AFTER_NETWORK_CONFIG");return false;
-  }
-  if(!c2CheckBufferMap("C2_AFTER_NETWORK_CONFIG")){
-    c2FailSetup("BUFFER_MAP_NETWORK_CONFIG");return false;
-  }
-
-  const uint32_t linkWaitStartMs=millis();
-  uint32_t linkStableStartMs=0;
-  while(millis()-linkWaitStartMs<10000){
-    uint8_t phy=0;
-    const bool profileOk=c2CheckFixed10Half(false,&phy);
-    if(!profileOk){
-      c2FailSetup("LINK_PROFILE_CHANGED");return false;
-    }
-    if((phy&0x01)!=0){
-      if(linkStableStartMs==0)linkStableStartMs=millis();
-      if(millis()-linkStableStartMs>=500){c2.linkStable=true;break;}
-    }else{
-      linkStableStartMs=0;
-    }
-    delay(25);
-  }
-  if(!c2.linkStable){c2FailSetup("LINK_TIMEOUT");return false;}
-  c2ScopeMarker("LINK_UP");
-
-  Serial.println("UDP_BEGIN_ENTER");
-  ++c2.udpBeginCount;
-  prepareForLanAccess();
-  const uint32_t udpBeginStartUs=micros();
-  const uint8_t udpResult=udp.begin(Config::kPort);
-  const uint32_t udpBeginUs=micros()-udpBeginStartUs;
-  releaseExternalSpiDevices();
-  c2.udpBeginMaxUs=udpBeginUs;
-  c2.udpReady=udpResult==1;
-  if(!c2.udpReady)++c2.udpBeginFail;
-  Serial.printf("UDP_BEGIN_EXIT result=%u duration_us=%lu\n",udpResult,
-                (unsigned long)udpBeginUs);
-  if(!c2.udpReady){c2FailSetup("UDP_BEGIN");return false;}
-  if(!c2AuditUdpSocket()){c2FailSetup("UDP_SOCKET");return false;}
-  if(!c2CheckFixed10Half(true)){
-    c2FailSetup("PHY_AFTER_UDP_BEGIN");return false;
-  }
-  if(!c2CheckBufferMap("C2_AFTER_UDP_BEGIN")){
-    c2FailSetup("BUFFER_MAP_UDP_BEGIN");return false;
-  }
-  c2.version=c2ReadVersion();
-  if(c2.version!=0x04){c2FailSetup("VERSION_AFTER_UDP_BEGIN");return false;}
-  c2ScopeMarker("UDP_START");
-  if(!c2CheckBufferMap("C2_BEFORE_USB_INIT")){
-    c2FailSetup("BUFFER_MAP_USB_INIT");return false;
-  }
-
-  prepareForUsbAccess();
-  initializeUsb();
-  if(!state.usbInit||!state.parser){c2FailSetup("USB_INIT");return false;}
-  const uint32_t usbWaitStartMs=millis();
-  uint32_t usbStableStartMs=0;
-  uint32_t lastLinkCheckMs=usbWaitStartMs;
-  while(millis()-usbWaitStartMs<10000){
-    serviceUsbTask();
-    updateUsbIdentity();
-    const uint32_t now=millis();
-    if(targetHoriRunning()){
-      if(usbStableStartMs==0)usbStableStartMs=now;
-      if(now-usbStableStartMs>=1000){c2.usbStable=true;break;}
-    }else{
-      usbStableStartMs=0;
-    }
-    if(now-lastLinkCheckMs>=250){
-      lastLinkCheckMs=now;
-      if(!c2CheckFixed10Half(true)){
-        c2FailSetup("PHY_DURING_USB_STABILITY");return false;
-      }
-    }
-    delay(1);
-  }
-  if(!c2.usbStable){c2FailSetup("HORI_READY");return false;}
-  state.usbStableWindowComplete=true;
-  state.previousUsbTaskState=state.usbTaskState;
-  state.previousHidReady=state.hidReady;
-  state.startMs=millis();
-  c2.trialStartMs=state.startMs;
-  c2.nextDeadlineUs=micros()+20000UL;
-  c2.lastRuntimeCheckMs=state.startMs;
-  c2.lastHidReportMs=state.startMs;
-  c2.lastHidReportTotal=state.hidReportTotal;
-  state.maxUsbGapUs=0;
-  state.maxUsbTaskUs=0;
-  state.lanAccessAllowed=true;
-  Serial.printf("C2_READY=1 USB_STATE=%02X HID_READY=%u VID=%04X PID=%04X "
-                "USB_STABLE_MS=1000 LINK_STABLE_MS=500\n",state.usbTaskState,
-                state.hidReady,state.vid,state.pid);
-  Serial.println("DIAGNOSTIC_START");
-  return true;
-}
-
-uint16_t c2Crc16(const uint8_t* data,size_t length){
-  uint16_t crc=0xFFFF;
-  for(size_t index=0;index<length;++index){
-    crc^=static_cast<uint16_t>(data[index])<<8;
-    for(uint8_t bit=0;bit<8;++bit){
-      crc=(crc&0x8000)?static_cast<uint16_t>((crc<<1)^0x1021):
-                       static_cast<uint16_t>(crc<<1);
-    }
-  }
-  return crc;
-}
-
-void c2WriteU32Be(uint8_t* destination,uint32_t value){
-  destination[0]=static_cast<uint8_t>(value>>24);
-  destination[1]=static_cast<uint8_t>(value>>16);
-  destination[2]=static_cast<uint8_t>(value>>8);
-  destination[3]=static_cast<uint8_t>(value);
-}
-
-uint32_t c2ReadU32Be(const uint8_t* source){
-  return (static_cast<uint32_t>(source[0])<<24)|
-         (static_cast<uint32_t>(source[1])<<16)|
-         (static_cast<uint32_t>(source[2])<<8)|
-         static_cast<uint32_t>(source[3]);
-}
-
-void c2BuildFrame(uint8_t frame[32],uint32_t sequence,uint32_t deviceMicros){
-  frame[0]='C';frame[1]='2';frame[2]='U';frame[3]='D';
-  frame[4]=1;frame[5]=2;
-  frame[6]=static_cast<uint8_t>((targetHoriRunning()?0x01:0x00)|
-                               (c2.linkStable?0x02:0x00));
-  frame[7]=32;
-  c2WriteU32Be(frame+8,sequence);
-  c2WriteU32Be(frame+12,deviceMicros);
-  for(uint8_t index=0;index<14;++index){
-    frame[16+index]=static_cast<uint8_t>(sequence+index*17U+0x5AU);
-  }
-  const uint16_t crc=c2Crc16(frame,30);
-  frame[30]=static_cast<uint8_t>(crc>>8);
-  frame[31]=static_cast<uint8_t>(crc);
-}
-
-void c2UpdateMax(uint32_t value,uint32_t& maximum){
-  if(value>maximum)maximum=value;
-}
-
-int8_t c2FindFreeSlot(){
-  for(uint8_t index=0;index<kC2OutstandingCapacity;++index){
-    if(!c2.outstanding[index].inUse)return static_cast<int8_t>(index);
-  }
-  return -1;
-}
-
-int8_t c2FindOutstandingSlot(uint32_t sequence){
-  for(uint8_t index=0;index<kC2OutstandingCapacity;++index){
-    if(c2.outstanding[index].inUse&&c2.outstanding[index].sequence==sequence){
-      return static_cast<int8_t>(index);
-    }
-  }
-  return -1;
-}
-
-void c2RecordRtt(uint32_t ageUs){
-  if(ageUs<c2.echoRttMinUs)c2.echoRttMinUs=ageUs;
-  if(ageUs>c2.echoRttMaxUs)c2.echoRttMaxUs=ageUs;
-  if(ageUs<5000UL)++c2.echoRttBucket0_5;
-  else if(ageUs<10000UL)++c2.echoRttBucket5_10;
-  else if(ageUs<20000UL)++c2.echoRttBucket10_20;
-  else if(ageUs<50000UL)++c2.echoRttBucket20_50;
-  else if(ageUs<100000UL)++c2.echoRttBucket50_100;
-  else if(ageUs<200000UL)++c2.echoRttBucket100_200;
-  else if(ageUs<400000UL)++c2.echoRttBucket200_400;
-  else ++c2.echoRttBucket400_500;
-}
-
-// Fixed-capacity outstanding-send table: no heap allocation, no silent
-// eviction. If no free slot exists the send is refused and the trial fails
-// hard via pendingFailReason, per the C2 canonical contract.
-void c2SendFrame(){
-  const int8_t slot=c2FindFreeSlot();
-  if(slot<0){
-    ++c2.outstandingTableOverflow;
-    c2.pendingFailReason="OUTSTANDING_TABLE_OVERFLOW";
-    return;
-  }
-  uint8_t frame[32]{};
-  const uint32_t attemptUs=micros();
-  if(c2.lastTxUs)c2UpdateMax(attemptUs-c2.lastTxUs,c2.udpMaxGapUs);
-  c2.lastTxUs=attemptUs;
-  c2BuildFrame(frame,c2.sequence,attemptUs);
-  ++c2.udpTxTotal;
-  bool sent=true;
-
-  prepareForLanAccess();
-  uint32_t phaseStartUs=micros();
-  const int beginResult=udp.beginPacket(Config::kC1PeerIp,Config::kPort);
-  c2UpdateMax(micros()-phaseStartUs,c2.udpBeginPacketMaxUs);
-  releaseExternalSpiDevices();
-  sent=beginResult==1;
-
-  size_t writeResult=0;
-  if(sent){
-    prepareForLanAccess();
-    phaseStartUs=micros();
-    writeResult=udp.write(frame,sizeof(frame));
-    c2UpdateMax(micros()-phaseStartUs,c2.udpWriteMaxUs);
-    releaseExternalSpiDevices();
-    sent=writeResult==sizeof(frame);
-  }
-
-  int endResult=0;
-  if(sent){
-    prepareForLanAccess();
-    phaseStartUs=micros();
-    endResult=udp.endPacket();
-    c2UpdateMax(micros()-phaseStartUs,c2.udpEndPacketMaxUs);
-    releaseExternalSpiDevices();
-    sent=endResult==1;
-  }
-  releaseExternalSpiDevices();
-  if(sent){
-    c2.outstanding[slot].inUse=true;
-    c2.outstanding[slot].sequence=c2.sequence;
-    c2.outstanding[slot].sentMicros=attemptUs;
-  }else{
-    ++c2.udpTxFail;
-  }
-  ++c2.sequence;
-}
-
-// Bounded RX: parsePacket() and read() are each called at most once per
-// loop iteration, and at most one datagram is drained per loop, per the C2
-// contract's M5-Ethernet RX residual-risk mitigation.
-//
-// Strict source validation: EthernetUDP::remoteIP()/remotePort() are
-// populated by EthernetUdp.cpp's parsePacket() (frozen reviewed source,
-// role m5_ethernet_udp) before it returns, and are safe to read here prior
-// to read(). Every rejection below increments its own hard-zero counter
-// and hard-fails the trial immediately; none are silently tolerated.
-void c2ProcessIncomingEcho(){
-  if(!c2.udpReady)return;
-  prepareForLanAccess();
-  const int packetSize=udp.parsePacket();
-  if(packetSize<=0){
-    releaseExternalSpiDevices();
-    return;
-  }
-  const IPAddress remoteIp=udp.remoteIP();
-  const uint16_t remotePort=udp.remotePort();
-  uint8_t frame[64]{};
-  const int readLength=udp.read(frame,sizeof(frame));
-  releaseExternalSpiDevices();
-  ++c2.udpRxTotal;
-  if(!(remoteIp==Config::kC1PeerIp)){
-    ++c2.echoSourceIpError;++c2.udpRxInvalid;
-    c2.pendingFailReason="ECHO_SOURCE_IP_ERROR";
-    return;
-  }
-  if(remotePort!=Config::kPort){
-    ++c2.echoSourcePortError;++c2.udpRxInvalid;
-    c2.pendingFailReason="ECHO_SOURCE_PORT_ERROR";
-    return;
-  }
-  if(readLength!=32){
-    ++c2.echoLengthError;++c2.udpRxInvalid;
-    c2.pendingFailReason="ECHO_LENGTH_ERROR";
-    return;
-  }
-  if(frame[0]!='C'||frame[1]!='2'||frame[2]!='U'||frame[3]!='D'){
-    ++c2.echoMagicError;++c2.udpRxInvalid;
-    c2.pendingFailReason="ECHO_MAGIC_ERROR";
-    return;
-  }
-  if(frame[4]!=1){
-    ++c2.echoVersionError;++c2.udpRxInvalid;
-    c2.pendingFailReason="ECHO_VERSION_ERROR";
-    return;
-  }
-  if(frame[5]!=2){
-    ++c2.echoGateError;++c2.udpRxInvalid;
-    c2.pendingFailReason="ECHO_GATE_ERROR";
-    return;
-  }
-  if(frame[7]!=32){
-    ++c2.echoLengthError;++c2.udpRxInvalid;
-    c2.pendingFailReason="ECHO_LENGTH_ERROR";
-    return;
-  }
-  if(frame[6]!=0x03){
-    ++c2.echoFlagsError;++c2.udpRxInvalid;
-    c2.pendingFailReason="ECHO_FLAGS_ERROR";
-    return;
-  }
-  const uint16_t crc=c2Crc16(frame,30);
-  const uint16_t frameCrc=static_cast<uint16_t>(
-    (static_cast<uint16_t>(frame[30])<<8)|frame[31]);
-  if(crc!=frameCrc){
-    ++c2.echoCrcError;++c2.udpRxInvalid;
-    c2.pendingFailReason="ECHO_CRC_ERROR";
-    return;
-  }
-  const uint32_t sequence=c2ReadU32Be(frame+8);
-  const uint32_t echoedDeviceMicros=c2ReadU32Be(frame+12);
-  for(uint8_t index=0;index<14;++index){
-    const uint8_t expected=static_cast<uint8_t>(sequence+index*17U+0x5AU);
-    if(frame[16+index]!=expected){
-      ++c2.echoPayloadError;++c2.udpRxInvalid;
-      c2.pendingFailReason="ECHO_PAYLOAD_ERROR";
-      return;
-    }
-  }
-  const int8_t slot=c2FindOutstandingSlot(sequence);
-  if(slot<0){
-    ++c2.echoUnmatched;++c2.udpRxInvalid;
-    c2.pendingFailReason="ECHO_UNMATCHED";
-    return;
-  }
-  if(c2.outstanding[slot].sentMicros!=echoedDeviceMicros){
-    ++c2.echoTimestampMismatch;++c2.udpRxInvalid;
-    c2.pendingFailReason="ECHO_TIMESTAMP_MISMATCH";
-    return;
-  }
-  const uint32_t nowUs=micros();
-  const uint32_t ageUs=
-    static_cast<uint32_t>(nowUs-c2.outstanding[slot].sentMicros);
-  if(ageUs>=kC2EchoWatchdogUs){
-    ++c2.echoLateAtOrAfterWatchdog;
-    c2.outstanding[slot].inUse=false;
-    c2.pendingFailReason="ECHO_LATE_AT_OR_AFTER_WATCHDOG";
-    return;
-  }
-  c2.outstanding[slot].inUse=false;
-  ++c2.udpEchoValidTotal;
-  c2RecordRtt(ageUs);
-}
-
-uint8_t c2OutstandingCount(){
-  uint8_t count=0;
-  for(uint8_t index=0;index<kC2OutstandingCapacity;++index){
-    if(c2.outstanding[index].inUse)++count;
-  }
-  return count;
-}
-
-// Fixed 32-entry sweep (bounded, not a receive-drain loop): expires any
-// outstanding send whose echo never arrived within the watchdog boundary.
-void c2WatchdogSweep(){
-  const uint32_t nowUs=micros();
-  for(uint8_t index=0;index<kC2OutstandingCapacity;++index){
-    if(!c2.outstanding[index].inUse)continue;
-    const uint32_t ageUs=
-      static_cast<uint32_t>(nowUs-c2.outstanding[index].sentMicros);
-    if(ageUs>=kC2EchoWatchdogUs){
-      ++c2.echoLateAtOrAfterWatchdog;
-      c2.outstanding[index].inUse=false;
-      c2.pendingFailReason="ECHO_LATE_AT_OR_AFTER_WATCHDOG";
-      return;
-    }
-  }
-}
-
-void c2PrintStatistics(const char* prefix){
-  Serial.printf("%s UDP_TX_TOTAL=%lu UDP_TX_FAIL=%lu UDP_BEGIN_COUNT=%lu "
-                "UDP_BEGIN_FAIL=%lu UDP_BEGIN_MAX_US=%lu "
-                "UDP_BEGIN_PACKET_MAX_US=%lu UDP_WRITE_MAX_US=%lu "
-                "UDP_END_PACKET_MAX_US=%lu UDP_MAX_GAP_US=%lu "
-                "SCHEDULER_MISSED_DEADLINE=%lu "
-                "SCHEDULER_MAX_LATENESS_US=%lu LOOP_MAX_US=%lu "
-                "HID_STALL_COUNT=%lu HID_MAX_NO_REPORT_MS=%lu "
-                "UDP_RX_TOTAL=%lu UDP_RX_INVALID=%lu "
-                "UDP_ECHO_VALID_TOTAL=%lu ECHO_LATE_AT_OR_AFTER_WATCHDOG=%lu "
-                "OUTSTANDING_TABLE_OVERFLOW=%lu "
-                "ECHO_MAGIC_ERROR=%lu ECHO_VERSION_ERROR=%lu "
-                "ECHO_GATE_ERROR=%lu ECHO_LENGTH_ERROR=%lu "
-                "ECHO_CRC_ERROR=%lu ECHO_PAYLOAD_ERROR=%lu "
-                "ECHO_FLAGS_ERROR=%lu ECHO_SOURCE_IP_ERROR=%lu "
-                "ECHO_SOURCE_PORT_ERROR=%lu ECHO_UNMATCHED=%lu "
-                "ECHO_TIMESTAMP_MISMATCH=%lu "
-                "ACTIVE_RUNTIME_MS=%lu DRAIN_RUNTIME_MS=%lu "
-                "OUTSTANDING_FINAL=%lu OUTSTANDING_CURRENT=%u DRAINING=%u "
-                "ECHO_RTT_MIN_US=%lu ECHO_RTT_MAX_US=%lu "
-                "ECHO_RTT_BUCKET_0_5MS=%lu ECHO_RTT_BUCKET_5_10MS=%lu "
-                "ECHO_RTT_BUCKET_10_20MS=%lu ECHO_RTT_BUCKET_20_50MS=%lu "
-                "ECHO_RTT_BUCKET_50_100MS=%lu ECHO_RTT_BUCKET_100_200MS=%lu "
-                "ECHO_RTT_BUCKET_200_400MS=%lu ECHO_RTT_BUCKET_400_500MS=%lu\n",
-                prefix,
-                (unsigned long)c2.udpTxTotal,(unsigned long)c2.udpTxFail,
-                (unsigned long)c2.udpBeginCount,(unsigned long)c2.udpBeginFail,
-                (unsigned long)c2.udpBeginMaxUs,
-                (unsigned long)c2.udpBeginPacketMaxUs,
-                (unsigned long)c2.udpWriteMaxUs,
-                (unsigned long)c2.udpEndPacketMaxUs,
-                (unsigned long)c2.udpMaxGapUs,
-                (unsigned long)c2.schedulerMissedDeadline,
-                (unsigned long)c2.schedulerMaxLatenessUs,
-                (unsigned long)c2.loopMaxUs,
-                (unsigned long)c2.hidStallCount,
-                (unsigned long)c2.hidMaxNoReportMs,
-                (unsigned long)c2.udpRxTotal,(unsigned long)c2.udpRxInvalid,
-                (unsigned long)c2.udpEchoValidTotal,
-                (unsigned long)c2.echoLateAtOrAfterWatchdog,
-                (unsigned long)c2.outstandingTableOverflow,
-                (unsigned long)c2.echoMagicError,
-                (unsigned long)c2.echoVersionError,
-                (unsigned long)c2.echoGateError,
-                (unsigned long)c2.echoLengthError,
-                (unsigned long)c2.echoCrcError,
-                (unsigned long)c2.echoPayloadError,
-                (unsigned long)c2.echoFlagsError,
-                (unsigned long)c2.echoSourceIpError,
-                (unsigned long)c2.echoSourcePortError,
-                (unsigned long)c2.echoUnmatched,
-                (unsigned long)c2.echoTimestampMismatch,
-                (unsigned long)c2.activeRuntimeMs,
-                (unsigned long)c2.drainRuntimeMs,
-                (unsigned long)c2.outstandingFinal,
-                c2OutstandingCount(),c2.draining,
-                (unsigned long)(c2.echoRttMinUs==0xFFFFFFFFUL?
-                                 0UL:c2.echoRttMinUs),
-                (unsigned long)c2.echoRttMaxUs,
-                (unsigned long)c2.echoRttBucket0_5,
-                (unsigned long)c2.echoRttBucket5_10,
-                (unsigned long)c2.echoRttBucket10_20,
-                (unsigned long)c2.echoRttBucket20_50,
-                (unsigned long)c2.echoRttBucket50_100,
-                (unsigned long)c2.echoRttBucket100_200,
-                (unsigned long)c2.echoRttBucket200_400,
-                (unsigned long)c2.echoRttBucket400_500);
-}
-
-void c2Finish(bool passed,const char* reason){
-  if(state.stopped)return;
-  updateUsbIdentity();
-  captureMaxSnapshot();
-  const uint32_t finishMs=millis();
-  if(!c2.draining){
-    c2.activeRuntimeMs=finishMs-c2.trialStartMs;
-    c2.drainRuntimeMs=0;
-  }else{
-    c2.drainRuntimeMs=finishMs-c2.drainStartMs;
-  }
-  c2.outstandingFinal=c2OutstandingCount();
-  c2.finalPhyOk=c2.w5100Init&&c2CheckFixed10Half(true);
-  c2.version=c2.w5100Init?c2ReadVersion():0;
-  c2.finalVersionOk=c2.version==0x04;
-  c2.finalBufferMapOk=c2.w5100Init&&c2CheckBufferMap("C2_TRIAL_END");
-  const bool finalUsbOk=state.usbTaskState==0x90&&state.hidReady;
-  const uint32_t rttBucketSum=c2.echoRttBucket0_5+c2.echoRttBucket5_10+
-    c2.echoRttBucket10_20+c2.echoRttBucket20_50+c2.echoRttBucket50_100+
-    c2.echoRttBucket100_200+c2.echoRttBucket200_400+c2.echoRttBucket400_500;
-  const bool rttInvariantOk=rttBucketSum==c2.udpEchoValidTotal;
-  const bool echoValidationClean=c2.udpRxInvalid==0&&c2.echoMagicError==0&&
-    c2.echoVersionError==0&&c2.echoGateError==0&&c2.echoLengthError==0&&
-    c2.echoCrcError==0&&c2.echoPayloadError==0&&c2.echoFlagsError==0&&
-    c2.echoSourceIpError==0&&c2.echoSourcePortError==0&&
-    c2.echoUnmatched==0&&c2.echoTimestampMismatch==0;
-  const bool runtimePass=passed&&c2.udpTxTotal>0&&c2.udpTxFail==0&&
-    c2.udpEchoValidTotal>0&&c2.echoLateAtOrAfterWatchdog==0&&
-    c2.outstandingTableOverflow==0&&c2.schedulerMissedDeadline==0&&
-    c2.outstandingFinal==0&&echoValidationClean&&
-    rttInvariantOk&&
-    c2.hidStallCount==0&&state.hidReadyDrop==0&&finalUsbOk&&
-    c2.finalPhyOk&&c2.finalVersionOk&&c2.finalBufferMapOk&&
-    state.maxSpiReadMismatch==0&&!state.spiCorruptionSuspected;
-  releaseExternalSpiDevices();
-  state.lanAccessAllowed=false;
-  state.stopped=true;
-  c2PrintStatistics("C2_FINAL");
-  Serial.printf("TEST_COMPLETE=%s TEST_MODE=16 TEST_MODE_NAME=%s "
-                "DURATION_MS=%lu TRIAL_RUNTIME_MS=%lu REASON=%s "
-                "ACTIVE_RUNTIME_MS=%lu DRAIN_RUNTIME_MS=%lu "
-                "OUTSTANDING_FINAL=%lu "
-                "FINAL_USB_STATE=%02X FINAL_HID_READY=%u "
-                "HID_READY_DROP=%lu HID_STALL_COUNT=%lu "
-                "HID_MAX_NO_REPORT_MS=%lu VID=%04X PID=%04X "
-                "HID_REPORT_TOTAL=%lu FINAL_PHY_OK=%u FINAL_VERSION_OK=%u "
-                "FINAL_BUFFER_MAP_OK=%u VERSIONR=%02X "
-                "MAX_REGISTER_TRIPLE_READ_MISMATCH=%lu "
-                "SPI_CORRUPTION_SUSPECTED=%u "
-                "UDP_RX_INVALID=%lu "
-                "UDP_ECHO_VALID_TOTAL=%lu ECHO_LATE_AT_OR_AFTER_WATCHDOG=%lu "
-                "OUTSTANDING_TABLE_OVERFLOW=%lu SCHEDULER_MISSED_DEADLINE=%lu "
-                "RTT_BUCKET_SUM_OK=%u SCOPE_RESULT=NOT_CAPTURED\n",
-                runtimePass?"PASS":"FAIL",kModePlan.name,
-                (unsigned long)(finishMs-c2.trialStartMs),
-                (unsigned long)(finishMs-c2.trialStartMs),reason,
-                (unsigned long)c2.activeRuntimeMs,
-                (unsigned long)c2.drainRuntimeMs,
-                (unsigned long)c2.outstandingFinal,
-                state.usbTaskState,
-                state.hidReady,(unsigned long)state.hidReadyDrop,
-                (unsigned long)c2.hidStallCount,
-                (unsigned long)c2.hidMaxNoReportMs,state.vid,state.pid,
-                (unsigned long)state.hidReportTotal,c2.finalPhyOk,
-                c2.finalVersionOk,c2.finalBufferMapOk,c2.version,
-                (unsigned long)state.maxSpiReadMismatch,
-                state.spiCorruptionSuspected,
-                (unsigned long)c2.udpRxInvalid,
-                (unsigned long)c2.udpEchoValidTotal,
-                (unsigned long)c2.echoLateAtOrAfterWatchdog,
-                (unsigned long)c2.outstandingTableOverflow,
-                (unsigned long)c2.schedulerMissedDeadline,rttInvariantOk);
-  c2ScopeMarker("TRIAL_COMPLETE",runtimePass?"PASS":"FAIL");
-}
-
-void loopC2(){
-  const uint32_t loopStartUs=micros();
-  serviceUsbTask();
-  updateUsbIdentity();
-  const uint32_t nowMs=millis();
-  if(!targetHoriRunning()){
-    if(!c2.detachMarkerPrinted){
-      c2.detachMarkerPrinted=true;
-      c2ScopeMarker("USB_DETACH");
-    }
-    c2Finish(false,"USB_DETACH_OR_UNSUPPORTED");
-    return;
-  }
-  if(state.hidReportTotal!=c2.lastHidReportTotal){
-    c2.lastHidReportTotal=state.hidReportTotal;
-    c2.lastHidReportMs=nowMs;
-  }
-  const uint32_t noReportMs=nowMs-c2.lastHidReportMs;
-  c2UpdateMax(noReportMs,c2.hidMaxNoReportMs);
-  if(noReportMs>100){
-    ++c2.hidStallCount;
-    c2Finish(false,"HID_STALL");
-    return;
-  }
-  if(nowMs-c2.lastRuntimeCheckMs>=250){
-    c2.lastRuntimeCheckMs=nowMs;
-    captureMaxSnapshot();
-    if(state.maxSpiReadMismatch!=0){
-      state.spiCorruptionSuspected=true;
-      c2Finish(false,"MAX_REGISTER_MISMATCH");
-      return;
-    }
-    if(!c2CheckFixed10Half(true)){
-      c2.linkStable=false;
-      c2Finish(false,"LINK_OR_PHY_CHANGED");
-      return;
-    }
-  }
-
-  // RX and watchdog run in both ACTIVE and DRAIN; only new TX is gated.
-  c2ProcessIncomingEcho();
-  if(c2.pendingFailReason){
-    c2Finish(false,c2.pendingFailReason);
-    return;
-  }
-  c2WatchdogSweep();
-  if(c2.pendingFailReason){
-    c2Finish(false,c2.pendingFailReason);
-    return;
-  }
-
-  if(!c2.draining){
-    const uint32_t nowUs=micros();
-    const int32_t lateness=static_cast<int32_t>(nowUs-c2.nextDeadlineUs);
-    if(lateness>=0){
-      const uint32_t latenessUs=static_cast<uint32_t>(lateness);
-      c2UpdateMax(latenessUs,c2.schedulerMaxLatenessUs);
-      const uint32_t skipped=latenessUs/20000UL;
-      c2.schedulerMissedDeadline+=skipped;
-      c2.nextDeadlineUs+=(skipped+1UL)*20000UL;
-      c2SendFrame();
-      if(c2.pendingFailReason){
-        c2Finish(false,c2.pendingFailReason);
-        return;
-      }
-    }
-  }
-  const uint32_t loopElapsedUs=micros()-loopStartUs;
-  c2UpdateMax(loopElapsedUs,c2.loopMaxUs);
-  if(nowMs-state.lastSerialMs>=1000){
-    state.lastSerialMs=nowMs;
-    c2PrintStatistics("C2_DIAG");
-  }
-
-  if(!c2.draining){
-    if(nowMs-c2.trialStartMs>=USB_LAN_TEST_DURATION_MS){
-      c2.draining=true;
-      c2.drainStartMs=nowMs;
-      c2.activeRuntimeMs=nowMs-c2.trialStartMs;
-      Serial.printf("C2_ACTIVE_COMPLETE=1 ACTIVE_RUNTIME_MS=%lu "
-                    "OUTSTANDING_AT_DRAIN_START=%u\n",
-                    (unsigned long)c2.activeRuntimeMs,c2OutstandingCount());
-      c2ScopeMarker("ACTIVE_COMPLETE");
-    }
-  }else{
-    if(c2OutstandingCount()==0){
-      c2Finish(true,"DRAIN_COMPLETE_OUTSTANDING_EMPTY");
-    }
-  }
-}
-#endif
-
-#if USB_LAN_TEST_MODE == 17
-void dgAScopeMarker(const char* event,const char* result=nullptr){
-  if(result){
-    Serial.printf("SCOPE_MARKER trial=DG-A event=%s result=%s\n",event,result);
-  }else{
-    Serial.printf("SCOPE_MARKER trial=DG-A event=%s\n",event);
-  }
-}
-
-uint8_t dgAReadVersion(){
-  prepareForLanAccess();
-  SPI.beginTransaction(SPI_ETHERNET_SETTINGS);
-  const uint8_t value=W5100.readVERSIONR_W5500();
-  SPI.endTransaction();
-  releaseExternalSpiDevices();
-  return value;
-}
-
-struct DgABufferMap {
-  uint8_t rxKb[8]{};
-  uint8_t txKb[8]{};
-};
-
-bool dgACheckBufferMap(const char* reason){
-  DgABufferMap map{};
-  prepareForLanAccess();
-  SPI.beginTransaction(SPI_ETHERNET_SETTINGS);
-  for(uint8_t socket=0;socket<8;++socket){
-    map.rxKb[socket]=W5100.readSnRX_SIZE(socket);
-    map.txKb[socket]=W5100.readSnTX_SIZE(socket);
-  }
-  SPI.endTransaction();
-  releaseExternalSpiDevices();
-  bool ok=W5100.SSIZE==8192 && W5100.SMASK==8191;
-  Serial.printf("BUFFER_MAP_CHECK reason=%s\n",reason);
-  for(uint8_t socket=0;socket<8;++socket){
-    Serial.printf("S%u_RX=%u S%u_TX=%u\n",socket,map.rxKb[socket],
-                  socket,map.txKb[socket]);
-    const uint8_t expected=socket<2?8:0;
-    if(map.rxKb[socket]!=expected||map.txKb[socket]!=expected)ok=false;
-  }
-  Serial.printf("SSIZE=%u\nSMASK=%u\nCH_BASE_MSB_INDIRECT_OK=%u\n"
-                "BUFFER_MAP_OK=%u\n",W5100.SSIZE,W5100.SMASK,ok,ok);
-  return ok;
-}
-
-bool dgACheckFixed10Half(bool requireLink,uint8_t* valueOut=nullptr){
-  constexpr uint8_t kPhyReset=0x80;
-  constexpr uint8_t kOperationModeFromRegister=0x40;
-  constexpr uint8_t kOperationModeMask=0x38;
-  constexpr uint8_t kDuplex=0x04;
-  constexpr uint8_t kSpeed=0x02;
-  constexpr uint8_t kLink=0x01;
-  const uint8_t value=readW5500PhyCfgr();
-  if(valueOut)*valueOut=value;
-  const bool profileOk=(value&static_cast<uint8_t>(kPhyReset|
-      kOperationModeFromRegister|kOperationModeMask))==
-      static_cast<uint8_t>(kPhyReset|kOperationModeFromRegister);
-  const bool speedOk=(value&kSpeed)==0;
-  const bool duplexOk=(value&kDuplex)==0;
-  const bool linkOk=(value&kLink)!=0;
-  const bool ok=profileOk&&speedOk&&duplexOk&&(!requireLink||linkOk);
-  Serial.printf("DG_A_PHY_CHECK RAW=%02X RST=%u OPMD=%u OPMDC=%u "
-                "SPEED_MBPS=%u DUPLEX=%s LINK=%u REQUIRE_LINK=%u OK=%u\n",
-                value,(value>>7)&1,(value>>6)&1,(value>>3)&7,
-                speedOk?10:100,duplexOk?"HALF":"FULL",linkOk,
-                requireLink,ok);
-  return ok;
-}
-
-bool dgAConfigureNetwork(){
-  prepareForLanAccess();
-  Ethernet.setMACAddress(Config::kMac);
-  releaseExternalSpiDevices();
-  prepareForLanAccess();
-  Ethernet.setLocalIP(Config::kLocalIp);
-  releaseExternalSpiDevices();
-  prepareForLanAccess();
-  Ethernet.setGatewayIP(Config::kGateway);
-  releaseExternalSpiDevices();
-  prepareForLanAccess();
-  Ethernet.setSubnetMask(Config::kSubnet);
-  releaseExternalSpiDevices();
-  prepareForLanAccess();
-  Ethernet.setDnsServerIP(Config::kDns);
-  releaseExternalSpiDevices();
-
-  uint8_t actualMac[6]{};
-  prepareForLanAccess();
-  Ethernet.MACAddress(actualMac);
-  releaseExternalSpiDevices();
-  prepareForLanAccess();
-  const IPAddress actualIp=Ethernet.localIP();
-  releaseExternalSpiDevices();
-  prepareForLanAccess();
-  const IPAddress actualGateway=Ethernet.gatewayIP();
-  releaseExternalSpiDevices();
-  prepareForLanAccess();
-  const IPAddress actualSubnet=Ethernet.subnetMask();
-  releaseExternalSpiDevices();
-  prepareForLanAccess();
-  const IPAddress actualDns=Ethernet.dnsServerIP();
-  releaseExternalSpiDevices();
-  bool macOk=true;
-  for(uint8_t index=0;index<6;++index){
-    if(actualMac[index]!=Config::kMac[index])macOk=false;
-  }
-  const bool ok=macOk&&actualIp==Config::kLocalIp&&
-                actualGateway==Config::kGateway&&
-                actualSubnet==Config::kSubnet&&actualDns==Config::kDns;
-  state.actualIp=actualIp;
-  Serial.printf("DG_A_NETWORK_READBACK MAC=%02X:%02X:%02X:%02X:%02X:%02X "
-                "LOCAL_IP=%u.%u.%u.%u GATEWAY=%u.%u.%u.%u "
-                "SUBNET=%u.%u.%u.%u DNS=%u.%u.%u.%u OK=%u\n",
-                actualMac[0],actualMac[1],actualMac[2],actualMac[3],
-                actualMac[4],actualMac[5],actualIp[0],actualIp[1],
-                actualIp[2],actualIp[3],actualGateway[0],actualGateway[1],
-                actualGateway[2],actualGateway[3],actualSubnet[0],
-                actualSubnet[1],actualSubnet[2],actualSubnet[3],actualDns[0],
-                actualDns[1],actualDns[2],actualDns[3],ok);
-  return ok;
-}
-
-bool dgAAuditUdpSocket(){
-  uint8_t udpCount=0;
-  prepareForLanAccess();
-  SPI.beginTransaction(SPI_ETHERNET_SETTINGS);
-  for(uint8_t socket=0;socket<8;++socket){
-    const uint8_t status=W5100.readSnSR(socket);
-    Serial.printf("DG_A_SOCKET_STATUS S%u=%02X\n",socket,status);
-    if(status==SnSR::UDP)++udpCount;
-  }
-  SPI.endTransaction();
-  releaseExternalSpiDevices();
-  Serial.printf("DG_A_UDP_SOCKET_COUNT=%u OK=%u\n",udpCount,udpCount==1);
-  return udpCount==1;
-}
-
-void dgAFailSetup(const char* reason){
-  if(state.stopped)return;
-  releaseExternalSpiDevices();
-  state.lanAccessAllowed=false;
-  state.stopped=true;
-  Serial.printf("DG_A_SETUP_FAIL=1 REASON=%s\n",reason);
-  Serial.printf("TEST_COMPLETE=FAIL TEST_MODE=17 TEST_MODE_NAME=%s "
-                "REASON=%s FINAL_USB_STATE=%02X FINAL_HID_READY=%u "
-                "HID_READY_DROP=%lu\n",kModePlan.name,reason,
-                state.usbTaskState,state.hidReady,
-                (unsigned long)state.hidReadyDrop);
-  dgAScopeMarker("TRIAL_COMPLETE","FAIL");
-}
-
-bool initializeDgA(){
-  Serial.println("DG_A_ARCHITECTURE=LAN_FIRST FIXED10HALF UDP_TX_RX_POLL_EMPTY "
-                 "ETHERNET_BEGIN=0 DHCP=0 SCOPE_RESULT=NOT_CAPTURED");
-  Serial.printf("DG_A_PEER_IP=%u.%u.%u.%u PEER_PORT=%u "
-                "PEER_IDENTITY=PC_ONLY_REQUIRED\n",Config::kC1PeerIp[0],
-                Config::kC1PeerIp[1],Config::kC1PeerIp[2],
-                Config::kC1PeerIp[3],Config::kPort);
-  releaseExternalSpiDevices();
-  Serial.printf("SPI_INIT_OWNER=DG_A_LAN COUNT=1 CALL=SPI.begin(%u,%u,%u,-1)\n",
-                PIN_SPI_SCK,PIN_SPI_MISO,PIN_SPI_MOSI);
-  SPI.begin(PIN_SPI_SCK,PIN_SPI_MISO,PIN_SPI_MOSI,-1);
-  dgAScopeMarker("PRE_RESET");
-  const uint32_t resetLowUs=micros()-state.lanResetLowUs;
-  if(resetLowUs<500){
-    delayMicroseconds(500-resetLowUs);
-  }
-  digitalWrite(Config::kLanReset,HIGH);
-  state.w5500ResetReleased=true;
-  state.resetReleaseMs=millis();
-  state.resetReleaseUs=micros();
-  dgAScopeMarker("RESET_RELEASE");
-  delayMicroseconds(1000);
-
-  prepareForLanAccess();
-  Ethernet.init(Config::kLanCs);
-  releaseExternalSpiDevices();
-  prepareForLanAccess();
-  const uint32_t initStartUs=micros();
-  const uint8_t initResult=W5100.init(1);
-  const uint32_t initElapsedUs=micros()-initStartUs;
-  releaseExternalSpiDevices();
-  dgA.w5100Init=initResult==1;
-  const uint8_t chip=W5100.getChip();
-  dgA.version=dgAReadVersion();
-  Serial.printf("DG_A_W5100_INIT_COUNT=1 RESULT=%u DURATION_US=%lu CHIP=%u "
-                "VERSIONR=%02X SSIZE=%u SMASK=%u\n",initResult,
-                (unsigned long)initElapsedUs,chip,dgA.version,W5100.SSIZE,
-                W5100.SMASK);
-  if(!dgA.w5100Init){dgAFailSetup("W5100_INIT");return false;}
-  if(chip!=55){dgAFailSetup("CHIP_ID");return false;}
-  if(dgA.version!=0x04){dgAFailSetup("VERSIONR");return false;}
-  if(!dgACheckBufferMap("DG_A_INIT_AFTER_W5100_INIT")){
-    dgAFailSetup("BUFFER_MAP_INIT");return false;
-  }
-
-  if(!applyW5500PhyProfile(
-       kPhyProfiles[static_cast<uint8_t>(PhyProfileId::kFixed10Half)])){
-    dgAFailSetup("PHY_PROFILE");return false;
-  }
-  dgAScopeMarker("PHY_PROFILE_APPLIED");
-  if(!dgACheckFixed10Half(false)){
-    dgAFailSetup("PHY_PROFILE_READBACK");return false;
-  }
-  if(!dgACheckBufferMap("DG_A_AFTER_FIXED10")){
-    dgAFailSetup("BUFFER_MAP_FIXED10");return false;
-  }
-
-  dgA.networkConfig=dgAConfigureNetwork();
-  if(!dgA.networkConfig){dgAFailSetup("NETWORK_CONFIG");return false;}
-  if(!dgACheckFixed10Half(false)){
-    dgAFailSetup("PHY_AFTER_NETWORK_CONFIG");return false;
-  }
-  if(!dgACheckBufferMap("DG_A_AFTER_NETWORK_CONFIG")){
-    dgAFailSetup("BUFFER_MAP_NETWORK_CONFIG");return false;
-  }
-
-  const uint32_t linkWaitStartMs=millis();
-  uint32_t linkStableStartMs=0;
-  while(millis()-linkWaitStartMs<10000){
-    uint8_t phy=0;
-    const bool profileOk=dgACheckFixed10Half(false,&phy);
-    if(!profileOk){
-      dgAFailSetup("LINK_PROFILE_CHANGED");return false;
-    }
-    if((phy&0x01)!=0){
-      if(linkStableStartMs==0)linkStableStartMs=millis();
-      if(millis()-linkStableStartMs>=500){dgA.linkStable=true;break;}
-    }else{
-      linkStableStartMs=0;
-    }
-    delay(25);
-  }
-  if(!dgA.linkStable){dgAFailSetup("LINK_TIMEOUT");return false;}
-  dgAScopeMarker("LINK_UP");
-
-  Serial.println("UDP_BEGIN_ENTER");
-  ++dgA.udpBeginCount;
-  prepareForLanAccess();
-  const uint32_t udpBeginStartUs=micros();
-  const uint8_t udpResult=udp.begin(Config::kPort);
-  const uint32_t udpBeginUs=micros()-udpBeginStartUs;
-  releaseExternalSpiDevices();
-  dgA.udpBeginMaxUs=udpBeginUs;
-  dgA.udpReady=udpResult==1;
-  if(!dgA.udpReady)++dgA.udpBeginFail;
-  Serial.printf("UDP_BEGIN_EXIT result=%u duration_us=%lu\n",udpResult,
-                (unsigned long)udpBeginUs);
-  if(!dgA.udpReady){dgAFailSetup("UDP_BEGIN");return false;}
-  if(!dgAAuditUdpSocket()){dgAFailSetup("UDP_SOCKET");return false;}
-  if(!dgACheckFixed10Half(true)){
-    dgAFailSetup("PHY_AFTER_UDP_BEGIN");return false;
-  }
-  if(!dgACheckBufferMap("DG_A_AFTER_UDP_BEGIN")){
-    dgAFailSetup("BUFFER_MAP_UDP_BEGIN");return false;
-  }
-  dgA.version=dgAReadVersion();
-  if(dgA.version!=0x04){dgAFailSetup("VERSION_AFTER_UDP_BEGIN");return false;}
-  dgAScopeMarker("UDP_START");
-  if(!dgACheckBufferMap("DG_A_BEFORE_USB_INIT")){
-    dgAFailSetup("BUFFER_MAP_USB_INIT");return false;
-  }
-
-  prepareForUsbAccess();
-  initializeUsb();
-  if(!state.usbInit||!state.parser){dgAFailSetup("USB_INIT");return false;}
-  const uint32_t usbWaitStartMs=millis();
-  uint32_t usbStableStartMs=0;
-  uint32_t lastLinkCheckMs=usbWaitStartMs;
-  while(millis()-usbWaitStartMs<10000){
-    serviceUsbTask();
-    updateUsbIdentity();
-    const uint32_t now=millis();
-    if(targetHoriRunning()){
-      if(usbStableStartMs==0)usbStableStartMs=now;
-      if(now-usbStableStartMs>=1000){dgA.usbStable=true;break;}
-    }else{
-      usbStableStartMs=0;
-    }
-    if(now-lastLinkCheckMs>=250){
-      lastLinkCheckMs=now;
-      if(!dgACheckFixed10Half(true)){
-        dgAFailSetup("PHY_DURING_USB_STABILITY");return false;
-      }
-    }
-    delay(1);
-  }
-  if(!dgA.usbStable){dgAFailSetup("HORI_READY");return false;}
-  state.usbStableWindowComplete=true;
-  state.previousUsbTaskState=state.usbTaskState;
-  state.previousHidReady=state.hidReady;
-  state.startMs=millis();
-  dgA.trialStartMs=state.startMs;
-  dgA.nextDeadlineUs=micros()+20000UL;
-  dgA.lastRuntimeCheckMs=state.startMs;
-  dgA.lastHidReportMs=state.startMs;
-  dgA.lastHidReportTotal=state.hidReportTotal;
-  state.maxUsbGapUs=0;
-  state.maxUsbTaskUs=0;
-  state.lanAccessAllowed=true;
-  Serial.printf("DG_A_READY=1 USB_STATE=%02X HID_READY=%u VID=%04X PID=%04X "
-                "USB_STABLE_MS=1000 LINK_STABLE_MS=500\n",state.usbTaskState,
-                state.hidReady,state.vid,state.pid);
-  Serial.println("DIAGNOSTIC_START");
-  return true;
-}
-
-uint16_t dgACrc16(const uint8_t* data,size_t length){
-  uint16_t crc=0xFFFF;
-  for(size_t index=0;index<length;++index){
-    crc^=static_cast<uint16_t>(data[index])<<8;
-    for(uint8_t bit=0;bit<8;++bit){
-      crc=(crc&0x8000)?static_cast<uint16_t>((crc<<1)^0x1021):
-                       static_cast<uint16_t>(crc<<1);
-    }
-  }
-  return crc;
-}
-
-void dgAWriteU32Be(uint8_t* destination,uint32_t value){
-  destination[0]=static_cast<uint8_t>(value>>24);
-  destination[1]=static_cast<uint8_t>(value>>16);
-  destination[2]=static_cast<uint8_t>(value>>8);
-  destination[3]=static_cast<uint8_t>(value);
-}
-
-// Reuses the Gate C1 (Mode 15) wire format verbatim: magic "C1UD", version 1, gate 1.
-// DG-A does not define a new frame format -- the network data plane stays identical to
-// C1 so the only behavioral difference between the two trials is the empty
-// udp.parsePacket() poll added to the device-side loop below.
-void dgABuildFrame(uint8_t frame[32],uint32_t sequence,uint32_t deviceMicros){
-  frame[0]='C';frame[1]='1';frame[2]='U';frame[3]='D';
-  frame[4]=1;frame[5]=1;
-  frame[6]=static_cast<uint8_t>((targetHoriRunning()?0x01:0x00)|
-                               (dgA.linkStable?0x02:0x00));
-  frame[7]=32;
-  dgAWriteU32Be(frame+8,sequence);
-  dgAWriteU32Be(frame+12,deviceMicros);
-  for(uint8_t index=0;index<14;++index){
-    frame[16+index]=static_cast<uint8_t>(sequence+index*17U+0x5AU);
-  }
-  const uint16_t crc=dgACrc16(frame,30);
-  frame[30]=static_cast<uint8_t>(crc>>8);
-  frame[31]=static_cast<uint8_t>(crc);
-}
-
-void dgAUpdateMax(uint32_t value,uint32_t& maximum){
-  if(value>maximum)maximum=value;
-}
-
-void dgASendFrame(){
-  uint8_t frame[32]{};
-  const uint32_t attemptUs=micros();
-  if(dgA.lastTxUs)dgAUpdateMax(attemptUs-dgA.lastTxUs,dgA.udpMaxGapUs);
-  dgA.lastTxUs=attemptUs;
-  dgABuildFrame(frame,dgA.sequence,attemptUs);
-  ++dgA.udpTxTotal;
-  bool sent=true;
-
-  prepareForLanAccess();
-  uint32_t phaseStartUs=micros();
-  const int beginResult=udp.beginPacket(Config::kC1PeerIp,Config::kPort);
-  dgAUpdateMax(micros()-phaseStartUs,dgA.udpBeginPacketMaxUs);
-  releaseExternalSpiDevices();
-  sent=beginResult==1;
-
-  size_t writeResult=0;
-  if(sent){
-    prepareForLanAccess();
-    phaseStartUs=micros();
-    writeResult=udp.write(frame,sizeof(frame));
-    dgAUpdateMax(micros()-phaseStartUs,dgA.udpWriteMaxUs);
-    releaseExternalSpiDevices();
-    sent=writeResult==sizeof(frame);
-  }
-
-  int endResult=0;
-  if(sent){
-    prepareForLanAccess();
-    phaseStartUs=micros();
-    endResult=udp.endPacket();
-    dgAUpdateMax(micros()-phaseStartUs,dgA.udpEndPacketMaxUs);
-    releaseExternalSpiDevices();
-    sent=endResult==1;
-  }
-  releaseExternalSpiDevices();
-  if(!sent)++dgA.udpTxFail;
-  ++dgA.sequence;
-}
-
-// The one function this gate exists to exercise: an empty udp.parsePacket() poll, at
-// most once per loop, with no udp.read() anywhere reachable from it. packetSize>0 is
-// not a network defect -- it means the fixed DG-A condition (no incoming traffic) did
-// not hold for this trial, so it is reported as a BLOCKED experiment-isolation
-// condition, not a physical failure. udp.read() is never called on any path here.
-void dgAPollRxEmpty(){
-  if(!dgA.udpReady)return;
-  prepareForLanAccess();
-  const uint32_t pollStartUs=micros();
-  const int packetSize=udp.parsePacket();
-  dgAUpdateMax(micros()-pollStartUs,dgA.rxPollMaxUs);
-  releaseExternalSpiDevices();
-  ++dgA.rxPollCallTotal;
-  if(packetSize>0){
-    ++dgA.rxPollPositiveTotal;
-    dgA.pendingFailReason="BLOCKED_DG_A_UNEXPECTED_RX_ACTIVITY";
-    return;
-  }
-  if(packetSize<0){
-    ++dgA.rxPollNegativeError;
-    dgA.pendingFailReason="DG_A_RX_POLL_API_FAIL";
-    return;
-  }
-}
-
-void dgAPrintStatistics(const char* prefix){
-  Serial.printf("%s UDP_TX_TOTAL=%lu UDP_TX_FAIL=%lu UDP_BEGIN_COUNT=%lu "
-                "UDP_BEGIN_FAIL=%lu UDP_BEGIN_MAX_US=%lu "
-                "UDP_BEGIN_PACKET_MAX_US=%lu UDP_WRITE_MAX_US=%lu "
-                "UDP_END_PACKET_MAX_US=%lu UDP_MAX_GAP_US=%lu "
-                "SCHEDULER_MISSED_DEADLINE=%lu "
-                "SCHEDULER_MAX_LATENESS_US=%lu LOOP_MAX_US=%lu "
-                "HID_STALL_COUNT=%lu HID_MAX_NO_REPORT_MS=%lu "
-                "RX_POLL_CALL_TOTAL=%lu RX_POLL_POSITIVE_TOTAL=%lu "
-                "RX_POLL_NEGATIVE_ERROR=%lu RX_READ_CALL_TOTAL=%lu "
-                "RX_READ_BYTES_TOTAL=%lu RX_POLL_MAX_US=%lu\n",prefix,
-                (unsigned long)dgA.udpTxTotal,(unsigned long)dgA.udpTxFail,
-                (unsigned long)dgA.udpBeginCount,(unsigned long)dgA.udpBeginFail,
-                (unsigned long)dgA.udpBeginMaxUs,
-                (unsigned long)dgA.udpBeginPacketMaxUs,
-                (unsigned long)dgA.udpWriteMaxUs,
-                (unsigned long)dgA.udpEndPacketMaxUs,
-                (unsigned long)dgA.udpMaxGapUs,
-                (unsigned long)dgA.schedulerMissedDeadline,
-                (unsigned long)dgA.schedulerMaxLatenessUs,
-                (unsigned long)dgA.loopMaxUs,
-                (unsigned long)dgA.hidStallCount,
-                (unsigned long)dgA.hidMaxNoReportMs,
-                (unsigned long)dgA.rxPollCallTotal,
-                (unsigned long)dgA.rxPollPositiveTotal,
-                (unsigned long)dgA.rxPollNegativeError,
-                (unsigned long)dgA.rxReadCallTotal,
-                (unsigned long)dgA.rxReadBytesTotal,
-                (unsigned long)dgA.rxPollMaxUs);
-}
-
-// Layer 1 (firmware) of the DG-A four-layer PASS contract. runtimePass is computed
-// purely from passed-in logical state and measured counters -- it never reads
-// TEST_COMPLETE/TEST_MODE/TEST_MODE_NAME, because those are this function's *output*,
-// not an input to the decision that produces them. TEST_MODE/TEST_MODE_NAME are
-// static/compile-time identity (kModePlan.name, USB_LAN_TEST_MODE) reported after the
-// fact; the external runner is where they become required evidence fields (Layer 2).
-void dgAFinish(bool passed,const char* reason){
-  if(state.stopped)return;
-  updateUsbIdentity();
-  captureMaxSnapshot();
-  dgA.finalPhyOk=dgA.w5100Init&&dgACheckFixed10Half(true);
-  dgA.version=dgA.w5100Init?dgAReadVersion():0;
-  dgA.finalVersionOk=dgA.version==0x04;
-  dgA.finalBufferMapOk=dgA.w5100Init&&dgACheckBufferMap("DG_A_TRIAL_END");
-  const bool finalUsbOk=state.usbTaskState==0x90&&state.hidReady;
-  const bool runtimePass=passed&&dgA.udpTxTotal>0&&dgA.udpTxFail==0&&
-    dgA.rxPollCallTotal>0&&dgA.rxPollPositiveTotal==0&&
-    dgA.rxPollNegativeError==0&&dgA.rxReadCallTotal==0&&
-    dgA.rxReadBytesTotal==0&&dgA.schedulerMissedDeadline==0&&
-    dgA.hidStallCount==0&&state.hidReadyDrop==0&&finalUsbOk&&
-    dgA.finalPhyOk&&dgA.finalVersionOk&&dgA.finalBufferMapOk&&
-    state.maxSpiReadMismatch==0&&!state.spiCorruptionSuspected;
-  releaseExternalSpiDevices();
-  state.lanAccessAllowed=false;
-  state.stopped=true;
-  dgAPrintStatistics("DG_A_FINAL");
-  Serial.printf("TEST_COMPLETE=%s TEST_MODE=17 TEST_MODE_NAME=%s "
-                "DURATION_MS=%lu TRIAL_RUNTIME_MS=%lu REASON=%s "
-                "FINAL_USB_STATE=%02X FINAL_HID_READY=%u "
-                "HID_READY_DROP=%lu HID_STALL_COUNT=%lu "
-                "HID_MAX_NO_REPORT_MS=%lu VID=%04X PID=%04X "
-                "HID_REPORT_TOTAL=%lu FINAL_PHY_OK=%u FINAL_VERSION_OK=%u "
-                "FINAL_BUFFER_MAP_OK=%u VERSIONR=%02X "
-                "MAX_REGISTER_TRIPLE_READ_MISMATCH=%lu "
-                "SPI_CORRUPTION_SUSPECTED=%u SCOPE_RESULT=NOT_CAPTURED\n",
-                runtimePass?"PASS":"FAIL",kModePlan.name,
-                (unsigned long)(millis()-dgA.trialStartMs),
-                (unsigned long)(millis()-dgA.trialStartMs),reason,
-                state.usbTaskState,
-                state.hidReady,(unsigned long)state.hidReadyDrop,
-                (unsigned long)dgA.hidStallCount,
-                (unsigned long)dgA.hidMaxNoReportMs,state.vid,state.pid,
-                (unsigned long)state.hidReportTotal,dgA.finalPhyOk,
-                dgA.finalVersionOk,dgA.finalBufferMapOk,dgA.version,
-                (unsigned long)state.maxSpiReadMismatch,
-                state.spiCorruptionSuspected);
-  dgAScopeMarker("TRIAL_COMPLETE",runtimePass?"PASS":"FAIL");
-}
-
-void loopDgA(){
-  const uint32_t loopStartUs=micros();
-  serviceUsbTask();
-  updateUsbIdentity();
-  const uint32_t nowMs=millis();
-  if(!targetHoriRunning()){
-    if(!dgA.detachMarkerPrinted){
-      dgA.detachMarkerPrinted=true;
-      dgAScopeMarker("USB_DETACH");
-    }
-    dgAFinish(false,"USB_DETACH_OR_UNSUPPORTED");
-    return;
-  }
-  if(state.hidReportTotal!=dgA.lastHidReportTotal){
-    dgA.lastHidReportTotal=state.hidReportTotal;
-    dgA.lastHidReportMs=nowMs;
-  }
-  const uint32_t noReportMs=nowMs-dgA.lastHidReportMs;
-  dgAUpdateMax(noReportMs,dgA.hidMaxNoReportMs);
-  if(noReportMs>100){
-    ++dgA.hidStallCount;
-    dgAFinish(false,"HID_STALL");
-    return;
-  }
-  if(nowMs-dgA.lastRuntimeCheckMs>=250){
-    dgA.lastRuntimeCheckMs=nowMs;
-    captureMaxSnapshot();
-    if(state.maxSpiReadMismatch!=0){
-      state.spiCorruptionSuspected=true;
-      dgAFinish(false,"MAX_REGISTER_MISMATCH");
-      return;
-    }
-    if(!dgACheckFixed10Half(true)){
-      dgA.linkStable=false;
-      dgAFinish(false,"LINK_OR_PHY_CHANGED");
-      return;
-    }
-  }
-
-  // The changed variable under test: empty parsePacket() poll, at most once per loop,
-  // in the same relative position c2ProcessIncomingEcho() occupies in loopC2() --
-  // after health checks, before TX scheduling.
-  dgAPollRxEmpty();
-  if(dgA.pendingFailReason){
-    dgAFinish(false,dgA.pendingFailReason);
-    return;
-  }
-
-  const uint32_t nowUs=micros();
-  const int32_t lateness=static_cast<int32_t>(nowUs-dgA.nextDeadlineUs);
-  if(lateness>=0){
-    const uint32_t latenessUs=static_cast<uint32_t>(lateness);
-    dgAUpdateMax(latenessUs,dgA.schedulerMaxLatenessUs);
-    const uint32_t skipped=latenessUs/20000UL;
-    dgA.schedulerMissedDeadline+=skipped;
-    dgA.nextDeadlineUs+=(skipped+1UL)*20000UL;
-    dgASendFrame();
-  }
-  const uint32_t loopElapsedUs=micros()-loopStartUs;
-  dgAUpdateMax(loopElapsedUs,dgA.loopMaxUs);
-  if(nowMs-state.lastSerialMs>=1000){
-    state.lastSerialMs=nowMs;
-    dgAPrintStatistics("DG_A_DIAG");
-  }
-  if(nowMs-dgA.trialStartMs>=USB_LAN_TEST_DURATION_MS){
-    dgAFinish(dgA.udpTxFail==0,"DURATION_COMPLETE");
-  }
 }
 #endif
 
@@ -3103,19 +1928,11 @@ void setup(){
                   (unsigned long)Config::kUsbPhyPollMs);
   }
   bool setupReady=true;
-  if(kModePlan.setup==SetupPlan::kUsbFixed10UdpTxOnly){
-#if USB_LAN_TEST_MODE == 15
+  if(kModePlan.setup==SetupPlan::kUsbFixed10UdpTxOnly ||
+     kModePlan.setup==
+       SetupPlan::kUsbFixed10UdpPositiveParseImmediateNullDiscard){
+#if USB_LAN_TEST_MODE == 15 || USB_LAN_TEST_MODE == 18
     initializeC1();
-#endif
-    return;
-  }else if(kModePlan.setup==SetupPlan::kUsbFixed10UdpEcho){
-#if USB_LAN_TEST_MODE == 16
-    initializeC2();
-#endif
-    return;
-  }else if(kModePlan.setup==SetupPlan::kUsbFixed10UdpTxRxPollEmpty){
-#if USB_LAN_TEST_MODE == 17
-    initializeDgA();
 #endif
     return;
   }else if(kModePlan.setup==SetupPlan::kResetReleaseOnly){
@@ -3169,21 +1986,11 @@ void setup(){
 
 void loop(){
   if(state.stopped){delay(10);return;}
-  if(kModePlan.setup==SetupPlan::kUsbFixed10UdpTxOnly){
-#if USB_LAN_TEST_MODE == 15
+  if(kModePlan.setup==SetupPlan::kUsbFixed10UdpTxOnly ||
+     kModePlan.setup==
+       SetupPlan::kUsbFixed10UdpPositiveParseImmediateNullDiscard){
+#if USB_LAN_TEST_MODE == 15 || USB_LAN_TEST_MODE == 18
     loopC1();
-#endif
-    return;
-  }
-  if(kModePlan.setup==SetupPlan::kUsbFixed10UdpEcho){
-#if USB_LAN_TEST_MODE == 16
-    loopC2();
-#endif
-    return;
-  }
-  if(kModePlan.setup==SetupPlan::kUsbFixed10UdpTxRxPollEmpty){
-#if USB_LAN_TEST_MODE == 17
-    loopDgA();
 #endif
     return;
   }
