@@ -6,10 +6,15 @@ param(
     [ValidateSet(10,20)][int]$PeriodMs=10,
     [ValidateSet(0,1)][int]$NumericUi=1,
     [ValidateSet('receiver','sender','sender-usb-only')][string[]]$Cases=@('receiver','sender','sender-usb-only'),
-    [ValidateSet(0,1)][int]$UsbIntake=0
+    [ValidateSet(0,1)][int]$UsbIntake=0,
+    [ValidateSet(0,1)][int]$PcPeerTest=0
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
+if(!$Cases.Count){throw 'At least one build case is required'}
+if($PcPeerTest -and ($Cases.Count -ne 1 -or $Cases[0] -ne 'sender' -or $UsbIntake)) {
+    throw 'PC peer test requires exactly -Cases sender and no USB intake'
+}
 if($UsbIntake -and ($Cases.Count -ne 1 -or $Cases[0] -ne 'sender-usb-only')) {
     throw 'USB intake requires exactly -Cases sender-usb-only'
 }
@@ -84,7 +89,8 @@ foreach($plan in $plans) {
       '-DARDUINO_USB_MODE=1','-DARDUINO_USB_CDC_ON_BOOT=1','-DARDUINO_USB_MSC_ON_BOOT=0',
       '-DARDUINO_USB_DFU_ON_BOOT=0','-DSERIAL2_RX_PIN=18','-DSERIAL2_TX_PIN=17',
       "-DSENDER_USB_ONLY=$($plan.UsbOnly)","-DPRODUCT_TRANSPORT_PERIOD_MS=$PeriodMs",
-      "-DPRODUCT_NUMERIC_UI=$NumericUi","-DSENDER_USB_INTAKE=$UsbIntake") -join ' '
+      "-DPRODUCT_NUMERIC_UI=$NumericUi","-DSENDER_USB_INTAKE=$UsbIntake",
+      "-DSENDER_PC_PEER_TEST=$PcPeerTest","-DPRODUCT_TEST_BUILD=$PcPeerTest") -join ' '
     $argsList=@('--config-file',$ConfigFile,'compile','--verbose','--clean','--jobs','8',
       '--fqbn','m5stack:esp32:m5stack_cores3','--build-path',$build)
     foreach($lib in $libraries){$argsList+=@('--library',$lib.Path)}
@@ -95,7 +101,10 @@ foreach($plan in $plans) {
     & arduino-cli @argsList *> $log
     if($LASTEXITCODE -ne 0){Get-Content $log -Tail 50;throw "Build failed: $($plan.Name); evidence=$caseRoot"}
     $bin=Join-Path $build ($plan.Sketch+'.bin')
-    $results+=[pscustomobject]@{Case=$plan.Name;SourceSha256=(Get-FileHash (Join-Path $sketch $plan.Sketch)).Hash;BinaryBytes=(Get-Item $bin).Length;BinarySha256=(Get-FileHash $bin).Hash;LogSha256=(Get-FileHash $log).Hash;Result='TARGET_BUILD_PASS';Physical='NOT_RUN'}
+    Get-ChildItem -LiteralPath $build -Filter '*.bin' | ForEach-Object {
+        [pscustomobject]@{File=$_.Name;Sha256=(Get-FileHash -LiteralPath $_.FullName).Hash}
+    } | Export-Csv -LiteralPath (Join-Path $caseRoot 'binary-hashes.csv') -NoTypeInformation -Encoding UTF8
+    $results+=[pscustomobject]@{Case=$plan.Name;PeriodMs=$PeriodMs;NumericUi=$NumericUi;UsbOnly=$plan.UsbOnly;UsbIntake=$UsbIntake;PcPeerTest=$PcPeerTest;BootAppSha256=(Get-FileHash (Join-Path $core 'tools/partitions/boot_app0.bin')).Hash;SourceSha256=(Get-FileHash (Join-Path $sketch $plan.Sketch)).Hash;BinaryBytes=(Get-Item $bin).Length;BinarySha256=(Get-FileHash $bin).Hash;LogSha256=(Get-FileHash $log).Hash;Result='TARGET_BUILD_PASS';Physical='NOT_RUN'}
     $results | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $OutputRoot 'results.json') -Encoding UTF8
     Write-Output "BUILD_PASS=$($plan.Name)"
 }

@@ -33,6 +33,21 @@
 #ifndef SENDER_USB_INTAKE
 #define SENDER_USB_INTAKE 0
 #endif
+#ifndef SENDER_PC_PEER_TEST
+#define SENDER_PC_PEER_TEST 0
+#endif
+#ifndef PRODUCT_TEST_BUILD
+#define PRODUCT_TEST_BUILD 0
+#endif
+static_assert(SENDER_PC_PEER_TEST==0 || SENDER_PC_PEER_TEST==1,"Invalid PC peer test profile");
+static_assert(PRODUCT_TEST_BUILD==SENDER_PC_PEER_TEST,"PC peer profile must be explicitly marked as a test build");
+static_assert(!SENDER_PC_PEER_TEST || (!SENDER_USB_ONLY && !SENDER_USB_INTAKE && SENDER_DIAGNOSTIC_MODE==4),
+              "PC peer test requires full duplex LAN and no USB-only intake");
+#if SENDER_PC_PEER_TEST
+#include "src/core_runtime/PcPeerTest.h"
+bool pcTestPhyOk=false;
+uint8_t pcTestPhy=0;
+#endif
 static_assert(SENDER_USB_INTAKE==0 || (SENDER_USB_INTAKE==1 && SENDER_USB_ONLY==1),
               "USB intake is available only in a USB-only diagnostic build");
 #if SENDER_USB_INTAKE
@@ -49,7 +64,7 @@ constexpr uint16_t kPort = 50001;
 constexpr uint32_t kPeriodMs = core_runtime::kTransportPeriodMs, kTimeoutMs = 100;
 constexpr uint32_t kLinkPollMs = 250, kDrawMs = 100, kBatteryMs = 1000,
                    kSerialMs = 1000;
-const IPAddress kLocalIp(192, 168, 50, 10), kPeerIp(192, 168, 50, 20);
+const IPAddress kLocalIp(192, 168, 50, 10), kPeerIp(192, 168, 50, SENDER_PC_PEER_TEST?30:20);
 const IPAddress kDns(192, 168, 50, 1), kGateway(192, 168, 50, 1),
                 kSubnet(255, 255, 255, 0);
 uint8_t kMac[6] = {0x02, 0x4D, 0x35, 0x53, 0x45, 0x10};
@@ -235,6 +250,9 @@ void initializeLan() {
   Ethernet.begin(Config::kMac, Config::kLocalIp, Config::kDns,
                  Config::kGateway, Config::kSubnet);
   state.w5500=Ethernet.hardwareStatus()==EthernetW5500;
+#if SENDER_PC_PEER_TEST
+  if(state.w5500) pcTestPhyOk=pc_peer_test::applyFixed10Half();
+#endif
   if (state.w5500) {
     Ethernet.setMACAddress(Config::kMac);
     Ethernet.setLocalIP(Config::kLocalIp);
@@ -245,6 +263,9 @@ void initializeLan() {
     state.lanCfg=state.actualIp==Config::kLocalIp &&
                  Ethernet.gatewayIP()==Config::kGateway &&
                  Ethernet.subnetMask()==Config::kSubnet;
+#if SENDER_PC_PEER_TEST
+    state.lanCfg=state.lanCfg && pcTestPhyOk;
+#endif
     if (state.lanCfg) state.udpReady=udp.begin(Config::kPort)==1;
   }
   releaseExternalSpiDevices();
@@ -483,6 +504,16 @@ void drawControllerInfo(uint32_t now) {
 }
 
 void logStatus(uint32_t now) {
+  Serial.printf("LCD_SNAPSHOT_MAX_MS=%lu LCD_DIRTY_MAX_MS=%lu LCD_PENDING_MS=%lu\n",
+    (unsigned long)numericDisplay.maxSnapshotAgeMs,(unsigned long)numericDisplay.maxDirtyAgeMs,
+    (unsigned long)numericDisplay.pendingAgeMs());
+#if SENDER_PC_PEER_TEST
+  pcTestPhy=pc_peer_test::readPhy();
+  Serial.printf("BUILD_PROFILE=PC_PEER_FIXED10HALF PC_PEER_LAST_OCTET=30 PHYCFGR=%02X PHY_OK=%u\n",
+    pcTestPhy,pc_peer_test::configured(pcTestPhy) && (pcTestPhy&0x06)==0);
+#else
+  Serial.printf("BUILD_PROFILE=%s PC_PEER_LAST_OCTET=20\n",Config::kUsbOnly?"USB_ONLY":"PRODUCT");
+#endif
 #if SENDER_USB_INTAKE
   usbIntake.log(now,controllerInput.effective(now),inputValid(now));
 #endif
@@ -594,7 +625,7 @@ void setup() {
   M5.Display.setRotation(1);
   M5.Display.fillScreen(BLACK);
   if (PRODUCT_NUMERIC_UI) Serial.printf("NUMERIC_UI_INIT=%s\n",
-    numericDisplay.begin("CoRE numeric / dev") ? "OK" : "FAIL");
+    numericDisplay.begin(SENDER_PC_PEER_TEST?"CoRE PC peer / TEST":"CoRE numeric / dev") ? "OK" : "FAIL");
   state.selfTestOk=selfTest();
   Serial.printf("PROTOCOL_SELF_TEST=%s\n",state.selfTestOk?"OK":"FAIL");
   if (state.selfTestOk) {

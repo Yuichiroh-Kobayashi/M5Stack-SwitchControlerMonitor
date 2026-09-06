@@ -1,0 +1,10 @@
+{
+  "decision": "pending",
+  "authority": "",
+  "max_packet_gap_ms": null,
+  "max_sender_lateness_ms": null,
+  "max_peer_lateness_ms": null,
+  "max_lcd_dirty_ms": null,
+  "max_lcd_unit_us": null,
+  "max_schedule_skips": null
+}

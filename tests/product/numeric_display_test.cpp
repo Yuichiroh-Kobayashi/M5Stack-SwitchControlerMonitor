@@ -28,6 +28,15 @@ int main(){
   }
   fake::nowUs+=2000;
   check(!display.service(millis()+5),"no unchanged screen push");
+  check(display.maxDirtyAgeMs==0 && display.maxSnapshotAgeMs==0,"startup paint excluded from update latency");
+  fake::nowUs=100000;display.text(0,"WAIT");
+  fake::nowUs=140000;display.text(0,"LATEST");
+  fake::nowUs=150000;
+  check(display.pendingAgeMs()==50,"oldest pending update exposed before drawing");
+  fake::transferUs=2000;
+  check(display.service(160),"delayed update drawn");
+  check(display.maxDirtyAgeMs==52 && display.maxSnapshotAgeMs==12,"latency includes draw completion and distinguishes coalescing");
+  check(display.pendingAgeMs()==0,"no pending updates after draw");
   fake::allocate=false;
   numeric_ui::NumericDisplay failedAllocation;
   check(!failedAllocation.begin("fail") && !failedAllocation.service(millis()+5),"allocation failure disables drawing");

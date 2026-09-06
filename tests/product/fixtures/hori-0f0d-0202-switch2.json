@@ -1,0 +1,107 @@
+{
+  "schema": "core-hori-capture-v1",
+  "vid": "0F0D",
+  "pid": "0202",
+  "mode": "Switch 2",
+  "evidence": "docs/validation/product-usb-intake-20260906.json",
+  "report_descriptor_sha256": "99B0E143128C21E3066F1DE6A124DCC314B0D6578DAFBA1DFF292972ACBE1F0D",
+  "configuration_descriptor_sha256": "E4797CDA5D2FF080140DEF3259A0642E8D078679E507FEE1D6C709FC02C22886",
+  "report_descriptor_hex": "05010905A10115002501350045017501950E05091901290E81029502810105012507463B017504950165140939814265007503950181010509090F1500250135004501750195018102050126FF0046FF0009300931093209357508950481027508950181010A4F4875089508B1020A4F489102C0",
+  "configuration_descriptor_hex": "0902290001010080FA0904000002030000000921110100012274000705020340000507058103400005",
+  "neutral_hex": "00000F8080808000",
+  "input_bytes": 8,
+  "report_id_prefix": false,
+  "unmapped_button": {
+    "usage": 15,
+    "byte": 2,
+    "mask": 128,
+    "physical_function": "UNKNOWN"
+  },
+  "button_mapping_reference": "M5Stack-SwitchController2CoREWirelessSender.ino; NOT manually qualified on product",
+  "buttons": [
+    {
+      "name": "A",
+      "raw_byte": 0,
+      "raw_mask": 4,
+      "wire_mask": 1
+    },
+    {
+      "name": "B",
+      "raw_byte": 0,
+      "raw_mask": 2,
+      "wire_mask": 2
+    },
+    {
+      "name": "X",
+      "raw_byte": 0,
+      "raw_mask": 8,
+      "wire_mask": 4
+    },
+    {
+      "name": "Y",
+      "raw_byte": 0,
+      "raw_mask": 1,
+      "wire_mask": 8
+    },
+    {
+      "name": "L",
+      "raw_byte": 0,
+      "raw_mask": 16,
+      "wire_mask": 16
+    },
+    {
+      "name": "R",
+      "raw_byte": 0,
+      "raw_mask": 32,
+      "wire_mask": 32
+    },
+    {
+      "name": "ZL",
+      "raw_byte": 0,
+      "raw_mask": 64,
+      "wire_mask": 64
+    },
+    {
+      "name": "ZR",
+      "raw_byte": 0,
+      "raw_mask": 128,
+      "wire_mask": 128
+    },
+    {
+      "name": "MINUS",
+      "raw_byte": 1,
+      "raw_mask": 1,
+      "wire_mask": 256
+    },
+    {
+      "name": "PLUS",
+      "raw_byte": 1,
+      "raw_mask": 2,
+      "wire_mask": 512
+    },
+    {
+      "name": "HOME",
+      "raw_byte": 1,
+      "raw_mask": 16,
+      "wire_mask": 1024
+    },
+    {
+      "name": "CAPTURE",
+      "raw_byte": 1,
+      "raw_mask": 32,
+      "wire_mask": 2048
+    },
+    {
+      "name": "LSTICK",
+      "raw_byte": 1,
+      "raw_mask": 4,
+      "wire_mask": 4096
+    },
+    {
+      "name": "RSTICK",
+      "raw_byte": 1,
+      "raw_mask": 8,
+      "wire_mask": 8192
+    }
+  ]
+}

@@ -31,17 +31,17 @@ class NumericDisplay {
     for(size_t i=0;i<kFieldCount;++i){
       M5.Display.setCursor(x(i),y(i));
       M5.Display.print(labels[i]);
-      fields_.set(i,"--");
+      fields_.set(i,"--",millis());
     }
     ready_=true;
     return true;
   }
-  void text(size_t index,const char* value){fields_.set(index,value);}
+  void text(size_t index,const char* value){fields_.set(index,value,millis());}
   void number(size_t index,uint32_t value){
-    char buffer[16]; snprintf(buffer,sizeof(buffer),"%lu",static_cast<unsigned long>(value)); fields_.set(index,buffer);
+    char buffer[16]; snprintf(buffer,sizeof(buffer),"%lu",static_cast<unsigned long>(value)); text(index,buffer);
   }
   void hex(size_t index,uint16_t value){
-    char buffer[9]; snprintf(buffer,sizeof(buffer),"%04X",static_cast<unsigned>(value)); fields_.set(index,buffer);
+    char buffer[9]; snprintf(buffer,sizeof(buffer),"%04X",static_cast<unsigned>(value)); text(index,buffer);
   }
   template<typename Pad> void pad(const Pad& p){
     number(3,p.lX); number(4,p.lY); number(5,p.rX); number(6,p.rY); number(7,p.dpad);
@@ -64,6 +64,15 @@ class NumericDisplay {
     tile_.setCursor(0,0);
     tile_.print(fields_.text(field));
     tile_.pushSprite(x(field)+54,y(field));
+    const uint32_t completed=millis();
+    const uint32_t snapshotAge=completed-fields_.updatedAt(field);
+    const uint32_t dirtyAge=completed-fields_.dirtySince(field);
+    // First paint includes lengthy hardware initialization and is not an
+    // update-latency measurement. Pending age still exposes undrawn fields.
+    if(fields_.hasBeenShown(field)) {
+      if(snapshotAge>maxSnapshotAgeMs) maxSnapshotAgeMs=snapshotAge;
+      if(dirtyAge>maxDirtyAgeMs) maxDirtyAgeMs=dirtyAge;
+    }
     fields_.drawn(field);
     const uint32_t duration=micros()-start;
     if(duration>maxUnitUs) maxUnitUs=duration;
@@ -71,6 +80,8 @@ class NumericDisplay {
     return true;
   }
   uint32_t maxUnitUs=0,deferred=0,drawn=0;
+  uint32_t maxSnapshotAgeMs=0,maxDirtyAgeMs=0;
+  uint32_t pendingAgeMs() const { return fields_.pendingAge(millis()); }
  private:
   static int x(size_t index){return static_cast<int>(index%3)*106;}
   static int y(size_t index){return 34+static_cast<int>(index/3)*24;}

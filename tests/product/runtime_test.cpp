@@ -40,5 +40,11 @@ int main(){
   unsigned visited=0;
   while(fields.next()>=0){fields.drawn(static_cast<size_t>(fields.next()));++visited;check(visited<=24,"no unbounded queue");}
   check(visited==24,"all 24 fields served");
+  fields.set(8,"old",100);fields.drawn(8);
+  fields.set(8,"first",110);fields.set(8,"latest",140);fields.set(8,"latest",150);
+  check(fields.dirtySince(8)==110 && fields.updatedAt(8)==140 && fields.pendingAge(160)==50,"coalescing preserves starvation age and latest snapshot time");
+  fields.set(8,"old",170);check(fields.pendingAge(180)==0,"return to displayed value clears pending age");
+  fields.set(8,"wrap",0xFFFFFFF0u);check(fields.pendingAge(4)==20,"dirty latency wraps millis");
+  fields.drawn(8);check(fields.pendingAge(5)==0,"draw clears pending latency");
   std::printf("RUNTIME_TEST_PASS checks=%u\n",checks);
 }

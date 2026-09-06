@@ -1,5 +1,7 @@
 # Product host tests and candidate builds
 
+Guided USB mapping, gated Windows binary peer, offline adjudication and immutable evidence bundles are documented in [the product trial guide](../../docs/product-trial-guide.md). Python replays never open a device or socket. Run the offline PowerShell guards with `powershell -NoProfile -ExecutionPolicy Bypass -File tests/product/run_trial_preflight_tests.ps1`.
+
 Issues: [HORI #8](https://github.com/Yuichiroh-Kobayashi/M5Stack-SwitchController2CoREWirelessSender/issues/8), [build #13](https://github.com/Yuichiroh-Kobayashi/M5Stack-SwitchController2CoREWirelessSender/issues/13), [physical owner #7](https://github.com/Yuichiroh-Kobayashi/M5Stack-SwitchController2CoREWirelessSender/issues/7).
 
 ## Host

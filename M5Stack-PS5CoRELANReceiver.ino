@@ -433,6 +433,9 @@ void logStatus(uint32_t now) {
     (unsigned long)Config::kPeriodMs,(unsigned long)maxSendLatenessMs,PRODUCT_NUMERIC_UI,
     (unsigned long)numericDisplay.maxUnitUs,(unsigned long)numericDisplay.deferred,
     (unsigned long)numericDisplay.drawn);
+  Serial.printf("LCD_SNAPSHOT_MAX_MS=%lu LCD_DIRTY_MAX_MS=%lu LCD_PENDING_MS=%lu\n",
+    (unsigned long)numericDisplay.maxSnapshotAgeMs,(unsigned long)numericDisplay.maxDirtyAgeMs,
+    (unsigned long)numericDisplay.pendingAgeMs());
   char ipText[16];
   snprintf(ipText,sizeof(ipText),"%u.%u.%u.%u",state.actualIp[0],state.actualIp[1],
            state.actualIp[2],state.actualIp[3]);
