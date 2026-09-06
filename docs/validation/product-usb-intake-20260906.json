@@ -1,0 +1,300 @@
+{
+  "result": "PASSIVE_USB_INTAKE_PASS_MANUAL_MAPPING_PENDING",
+  "checks": {
+    "stable_window_at_least_60s": true,
+    "ready_valid_hori": true,
+    "reports_continue": true,
+    "all_profiles_correct": true,
+    "no_drop_stall_or_stale_sample": true,
+    "report_shape_matches": true,
+    "mapped_neutral_all_accepted_reports": true,
+    "no_network_traffic": true,
+    "no_runtime_reset_observed": true,
+    "descriptor_input_layout": true
+  },
+  "head": "18f8870ca54a512ba53ba5ef463cbae13b1f6d38",
+  "build_package": "20260906-usb-intake-01",
+  "binary_sha256": "BC2E442F4C07F81C520BD54566B2476668FBB054D06B4080897009501EC83BA2",
+  "capture_seconds": 75.0008754,
+  "complete_status_rows": 68,
+  "first_uptime_ms": 10005,
+  "last_uptime_ms": 77005,
+  "stable_window_seconds": 67.0,
+  "first_hid_count": 1787,
+  "last_hid_count": 15187,
+  "hid_hz": 200.0,
+  "last_input_aggregate": {
+    "UPTIME": "77005",
+    "SEEN": "15187",
+    "ACCEPTED": "15187",
+    "NON_NEUTRAL": "0",
+    "LEN": "8",
+    "ID_FLAG": "0",
+    "COPIED": "8",
+    "RAW": "00000F8080808000",
+    "VALID": "1",
+    "BUTTONS": "0000",
+    "DP": "8",
+    "LX": "128",
+    "LY": "128",
+    "RX": "128",
+    "RY": "128",
+    "LT": "0",
+    "RT": "0",
+    "BUTTONS_OR": "0000",
+    "HATS": "0100",
+    "AXIS_MIN": "128,128,128,128",
+    "AXIS_MAX": "128,128,128,128"
+  },
+  "maximums": {
+    "HID_READY_DROP": 0,
+    "HID_STALL": 0,
+    "HID_AGE_MS": 1,
+    "MAX_USB_TASK_US": 581,
+    "MAX_USB_GAP_US": 4161,
+    "MAX_LOOP_US": 4420
+  },
+  "lcd_max_us": 486,
+  "descriptor_analysis": {
+    "interfaces": [
+      {
+        "number": 0,
+        "alternate": 0,
+        "endpoints": 2,
+        "class": 3,
+        "subclass": 0,
+        "protocol": 0
+      }
+    ],
+    "endpoints": [
+      {
+        "address": 2,
+        "attributes": 3,
+        "max_packet_size": 64,
+        "interval": 5
+      },
+      {
+        "address": 129,
+        "attributes": 3,
+        "max_packet_size": 64,
+        "interval": 5
+      }
+    ],
+    "report_id_tags": [],
+    "report_bits": {
+      "input:0": 64,
+      "feature:0": 64,
+      "output:0": 64
+    },
+    "fields": [
+      {
+        "descriptor_offset": 24,
+        "kind": "input",
+        "report_id": 0,
+        "bit_offset": 0,
+        "size_bits": 1,
+        "count": 14,
+        "bits": 14,
+        "flags": 2,
+        "usage_page": 9,
+        "logical_minimum_raw": 0,
+        "logical_maximum_raw": 1,
+        "local_items": [
+          {
+            "tag": 1,
+            "value": 1
+          },
+          {
+            "tag": 2,
+            "value": 14
+          }
+        ]
+      },
+      {
+        "descriptor_offset": 28,
+        "kind": "input",
+        "report_id": 0,
+        "bit_offset": 14,
+        "size_bits": 1,
+        "count": 2,
+        "bits": 2,
+        "flags": 1,
+        "usage_page": 9,
+        "logical_minimum_raw": 0,
+        "logical_maximum_raw": 1,
+        "local_items": []
+      },
+      {
+        "descriptor_offset": 45,
+        "kind": "input",
+        "report_id": 0,
+        "bit_offset": 16,
+        "size_bits": 4,
+        "count": 1,
+        "bits": 4,
+        "flags": 66,
+        "usage_page": 1,
+        "logical_minimum_raw": 0,
+        "logical_maximum_raw": 7,
+        "local_items": [
+          {
+            "tag": 0,
+            "value": 57
+          }
+        ]
+      },
+      {
+        "descriptor_offset": 53,
+        "kind": "input",
+        "report_id": 0,
+        "bit_offset": 20,
+        "size_bits": 3,
+        "count": 1,
+        "bits": 3,
+        "flags": 1,
+        "usage_page": 1,
+        "logical_minimum_raw": 0,
+        "logical_maximum_raw": 7,
+        "local_items": []
+      },
+      {
+        "descriptor_offset": 71,
+        "kind": "input",
+        "report_id": 0,
+        "bit_offset": 23,
+        "size_bits": 1,
+        "count": 1,
+        "bits": 1,
+        "flags": 2,
+        "usage_page": 9,
+        "logical_minimum_raw": 0,
+        "logical_maximum_raw": 1,
+        "local_items": [
+          {
+            "tag": 0,
+            "value": 15
+          }
+        ]
+      },
+      {
+        "descriptor_offset": 93,
+        "kind": "input",
+        "report_id": 0,
+        "bit_offset": 24,
+        "size_bits": 8,
+        "count": 4,
+        "bits": 32,
+        "flags": 2,
+        "usage_page": 1,
+        "logical_minimum_raw": 0,
+        "logical_maximum_raw": 255,
+        "local_items": [
+          {
+            "tag": 0,
+            "value": 48
+          },
+          {
+            "tag": 0,
+            "value": 49
+          },
+          {
+            "tag": 0,
+            "value": 50
+          },
+          {
+            "tag": 0,
+            "value": 53
+          }
+        ]
+      },
+      {
+        "descriptor_offset": 99,
+        "kind": "input",
+        "report_id": 0,
+        "bit_offset": 56,
+        "size_bits": 8,
+        "count": 1,
+        "bits": 8,
+        "flags": 1,
+        "usage_page": 1,
+        "logical_minimum_raw": 0,
+        "logical_maximum_raw": 255,
+        "local_items": []
+      },
+      {
+        "descriptor_offset": 108,
+        "kind": "feature",
+        "report_id": 0,
+        "bit_offset": 0,
+        "size_bits": 8,
+        "count": 8,
+        "bits": 64,
+        "flags": 2,
+        "usage_page": 1,
+        "logical_minimum_raw": 0,
+        "logical_maximum_raw": 255,
+        "local_items": [
+          {
+            "tag": 0,
+            "value": 18511
+          }
+        ]
+      },
+      {
+        "descriptor_offset": 113,
+        "kind": "output",
+        "report_id": 0,
+        "bit_offset": 0,
+        "size_bits": 8,
+        "count": 8,
+        "bits": 64,
+        "flags": 2,
+        "usage_page": 1,
+        "logical_minimum_raw": 0,
+        "logical_maximum_raw": 255,
+        "local_items": [
+          {
+            "tag": 0,
+            "value": 18511
+          }
+        ]
+      }
+    ],
+    "descriptor_hex": {
+      "CONFIGURATION": "0902290001010080FA0904000002030000000921110100012274000705020340000507058103400005",
+      "REPORT": "05010905A10115002501350045017501950E05091901290E81029502810105012507463B017504950165140939814265007503950181010509090F1500250135004501750195018102050126FF0046FF0009300931093209357508950481027508950181010A4F4875089508B1020A4F489102C0"
+    },
+    "descriptor_sha256": {
+      "CONFIGURATION": "E4797CDA5D2FF080140DEF3259A0642E8D078679E507FEE1D6C709FC02C22886",
+      "REPORT": "99B0E143128C21E3066F1DE6A124DCC314B0D6578DAFBA1DFF292972ACBE1F0D"
+    }
+  },
+  "limits": [
+    "Operator could not manipulate controller; manual mapping/UI and fault tests pending.",
+    "Descriptor reads and extra serial text alter timing; this is not a product performance comparison.",
+    "Byte2 bit7 declares button15; current parser has no mapping and aggregate mapped-button neutrality does not validate its behavior.",
+    "Peer timeout and inactive link are expected in USB-only mode.",
+    "No physical Receiver, UART, LAN integration or durability qualification."
+  ],
+  "file_hashes": {
+    "analyze.py": "D4B72A4BCB722F3F25B123B28248AB31F393F297C3E4E07326827F93CB93C304",
+    "arguments.json": "2616FC34BBE87110B970F84DAAF4957B447AC059BFC977815EE4A6B09F1148C5",
+    "build-results.json": "CE19748AC936331FADB1BF2AD8C6100B93DDE717463BDD6D93C8F551E8019024",
+    "check_modes.py": "1764F424DBFBA39E0B6A5039E6689F40EF3074FBB506866DB15878A42050B009",
+    "ci.log": "25FB60283E7FE1BC4DAB82C60D0E2F452437BA2DBF963551D866DFF06FB30A1E",
+    "configuration-descriptor.bin": "E4797CDA5D2FF080140DEF3259A0642E8D078679E507FEE1D6C709FC02C22886",
+    "descriptor-analysis.json": "66D4FDBB344865AEA596451252E58AA13F53263ABE7E64759CE507AB070A258D",
+    "intake-artifacts.json": "FAB02F1CC6E4A017DD907E0A2FAE0C1EAB5E91BF4E050F1E286AB5AA580C1CFD",
+    "intake-identity.json": "C517CC8E7EFBC42C95C206AEE54F7AD0EAE54A797043E2E7F4A5FF3430229673",
+    "intake-preflight.json": "A1C02D0725725A072A385C46A40845EBE28C7B71E4D9ACFDC4AC7784DBDCECE7",
+    "intake-serial.raw.log": "8556F0B427830C60A40A202EC9DFCB88A8464AE7E0CF3683E3FF68FD3427A31A",
+    "intake-serial.timed.log": "4EA92A65129667ABB9BC759D0E94ACFEAC38B9F955D7D38A1CB9E38725AE4E7E",
+    "intake-upload.log": "1EEA99079D4E7329E3D9BF3C01CE8F4950EC02B716F78B659D422828569C9379",
+    "library-hashes.csv": "5193985C6F6C7D956BE4F5D17D49CBF950691CBE8E2E72CC02E6571DFE2ACC3C",
+    "physical-environment.md": "F8ED65EFEF405148A8794CA2F72DABF92194C5607D5E91911A1A51339893D40E",
+    "report-descriptor.bin": "99B0E143128C21E3066F1DE6A124DCC314B0D6578DAFBA1DFF292972ACBE1F0D",
+    "run.ps1": "5DA38B1F85226A0F369A0561ED97B0344DBF79EEEE6EA1B27F2CB768D196DE45",
+    "source-hashes.csv": "739F8E90060CBDFCA1F2BF2D079BEB2BB169C3A70AF1B40748EC8CECCF0D04AA",
+    "syntax-results.json": "07F08AE92333963E76A998D2F357C937922E81C7526AB827587A2A13F55C088A"
+  }
+}

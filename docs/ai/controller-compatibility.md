@@ -26,6 +26,9 @@ None.
 - The product LAN Sender now selects the HORI candidate in `src/controller_profile/ControllerProfile.h`; suspended DualSense remains unsupported.
 - The candidate accepts exactly 8 bytes without a report-ID prefix; captured hat `0x0F` maps to protocol center `8`. Invalid reports clear the input session immediately. Product USB-only mapping and all integration gates remain unvalidated.
 - `M5Stack-SwitchController2CoREWirelessSender.ino` is the validated parser reference; its legacy transport is not the product LAN protocol.
+- 2026-09-06 product USB-only screening passed a complete64-second window; passive intake then passed67 seconds after descriptor acquisition on the operator-reported CoreS3 SE + USB Module + LAN Module + BAT Bottom stack, with W5500 held in reset. Both observed200 HID reports/s without reported drop/stall/rejection. These are separate trials, not additional legacy-runtime or integrated-durability evidence.
+- [Passive intake evidence](../validation/product-usb-intake-20260906.md) records interface0 HID,116-byte report descriptor SHA-256 `99B0E143128C21E3066F1DE6A124DCC314B0D6578DAFBA1DFF292972ACBE1F0D`, no report-ID item, and64-bit input report. Observed raw neutral is `00 00 0F 80 80 80 80 00`.
+- The descriptor additionally declares Button15 at byte2 bit7. Its physical control/function is unknown and remains unmapped. Do not assign it to turbo, macro, or another product function without physical evidence. Operator could not manipulate the controller, so button/direction mapping, ranges, trigger operation, turbo/macro state, screen readability, reconnect and LAN gates remain pending.
 
 Required next steps:
 
