@@ -11,10 +11,11 @@
 
 ## 作業の順序
 
-1. Runner修正とoffline regressionをレビューする。
-2. [non-null read診断設計](../usb-lan-next-non-null-read-design.md)をレビューする。現在は設計のみ。新診断実装・build・upload・実機S1/T1を実施したという意味ではない。
-3. UARTは [共通化設計](../uart-downstream-common-protocol-design.md)を検討する。QUESTiX receiver契約を保持したASCII UART adapterが推奨案。現行製品の32-byte UART契約はまだ変更していない。
-4. 診断の結論と製品安全設計を分けたうえで、HORI移植→USB-only mapping→製品LAN gateへ進む。
+1. [Issue一覧](../development-issues.md)の#8/#10/#11/#12/#13に対応するHORI・低SPI生成器・100Hz周期・25Hz数値表示・隔離ビルド候補をレビューする。旧診断Runnerのoffline回帰は保持する。
+2. 製品USB-only mappingを#7で確認する。合格前に製品LAN実機試験へ進まない。今回の作業はupload/配線変更を含まない。
+3. #9でUARTのinvalid/timeout時neutral出力とsequence/復帰契約を確定する。#15の[共通化設計](../uart-downstream-common-protocol-design.md)は別判断で、ASCII adapter案は未採用。
+4. #14で[non-null read診断設計](../usb-lan-next-non-null-read-design.md)と低SPI/UI比較の因子を分離する。新しいnon-null診断の物理PASSを意味しない。
+5. 各候補のauthorityと測定条件を固定し、#7のLAN統合・故障・耐久gateへ進む。source/build合格と実機適合は区別する。
 
 ## 共有と保存
 
