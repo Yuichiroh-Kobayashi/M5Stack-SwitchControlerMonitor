@@ -27,6 +27,7 @@ Transport parameters:
 - Nominal period: 10 ms (user-confirmed target 2026-09-06, implementation candidate; physical qualification pending). The wire format/version is unchanged. An explicit 20 ms comparison build remains available.
 - Validity timeout: 100 ms.
 - UART: exact 32-byte frame, 115200 8N1, no CR/LF and no ASCII conversion.
+- Adopted 2026-09-06: UART CONTROL sequence and uptime belong to Receiver, independently of LAN CONTROL/STATUS. UART runs every10ms even in a20ms LAN comparison build. See [the adopted UART/Mega contract](../uart-mega-contract.md) for source freshness, neutral latching, reboot, backpressure and operator rearm. Layout/version/CRC remain unchanged; byte-identical LAN forwarding ends.
 
 ## Encoding rules
 

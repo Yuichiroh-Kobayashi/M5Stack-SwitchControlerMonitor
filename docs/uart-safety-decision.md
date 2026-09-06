@@ -1,4 +1,6 @@
-# UART safety: remaining contract decision
+# UART safety: historical decision record
+
+Superseded on 2026-09-06 by the user's approval of [the Receiver-owned UART and Mega2560 contract](uart-mega-contract.md). The facts and pending-decision language below describe the pre-change implementation; they are retained as the rationale, not the current behavior.
 
 Owner: [#9](https://github.com/Yuichiroh-Kobayashi/M5Stack-SwitchController2CoREWirelessSender/issues/9). Physical acceptance: [#7](https://github.com/Yuichiroh-Kobayashi/M5Stack-SwitchController2CoREWirelessSender/issues/7). This is a proposal, not an adopted protocol/output change.
 

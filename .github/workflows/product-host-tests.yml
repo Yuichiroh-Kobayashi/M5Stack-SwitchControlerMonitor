@@ -8,6 +8,9 @@ on:
       - 'tools/prepare_product_libraries.py'
       - 'tools/product_validation/**'
       - 'tools/product_trial*'
+      - 'tools/prepare_mega_uart.py'
+      - 'tools/apply_mega_uart.ps1'
+      - 'downstream/mega2560/**'
       - '.github/workflows/product-host-tests.yml'
   pull_request:
     paths:
@@ -17,6 +20,9 @@ on:
       - 'tools/prepare_product_libraries.py'
       - 'tools/product_validation/**'
       - 'tools/product_trial*'
+      - 'tools/prepare_mega_uart.py'
+      - 'tools/apply_mega_uart.ps1'
+      - 'downstream/mega2560/**'
       - '.github/workflows/product-host-tests.yml'
 permissions:
   contents: read
@@ -34,3 +40,6 @@ jobs:
       - name: Exercise offline PowerShell validators
         shell: powershell
         run: ./tests/product/run_trial_preflight_tests.ps1
+      - name: Verify guarded Mega source application without hardware
+        shell: powershell
+        run: ./tests/product/run_mega_apply_tests.ps1

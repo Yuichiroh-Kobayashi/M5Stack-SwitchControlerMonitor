@@ -143,6 +143,7 @@ The current protocol is frozen unless the user explicitly authorizes a protocol 
 - Do not use packed structs, compiler-dependent layout, native-endian casts, or implicit padding.
 - Do not change UDP port `50001` without explicit approval.
 - UART transmits the same 32-byte frame with no ASCII conversion and no CR/LF terminator.
+- Adopted 2026-09-06: Receiver owns the UART CONTROL sequence and uptime, independently of LAN CONTROL and STATUS. UART runs every 10 ms, with invalid neutral at startup, invalid input and source timeout. This is the same binary layout, not byte-identical LAN forwarding. See `docs/uart-mega-contract.md` for rearm and backpressure semantics.
 
 Any protocol change must update both endpoints, the reference implementation, documentation, and compatibility tests in the same change.
 

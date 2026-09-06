@@ -13,7 +13,7 @@ User-confirmed 2026-09-06. These are development acceptance targets, not claims 
 | Unchanged contract | 32-byte v1 CR binary, CRC-16/CCITT-FALSE, big-endian, UDP50001, input/peer timeout100ms, Port C115200 8N1 |
 | Controller | HORI PAD TURBO 0F0D/0202, Switch 2; no product-supported controller until all gates pass |
 
-Develop from the current product source. Implement the HORI profile and pass USB-only mapping before product LAN integration. Do not change PHY mode or reset strategy as part of clock reduction. Receiver invalid/stale UART output needs a separate safety correction; the proposed ASCII adapter is not adopted.
+Develop from the current product source. Implement the HORI profile and pass USB-only mapping before product LAN integration. Do not change PHY mode or reset strategy as part of clock reduction. Receiver invalid/stale UART correction and Mega integration follow the user-adopted [binary UART contract](uart-mega-contract.md); physical safety validation remains separate. The proposed ASCII adapter is not adopted.
 
 Track durable outcomes in the [Issue index](development-issues.md). Integration #7 owns physical mapping, 60-second screening, 10-minute integration, disconnect/reconnect and 60-minute durability. Implementation children may have a nonphysical boundary, but are not closed before accepted changes and evidence meet their acceptance criteria.
 

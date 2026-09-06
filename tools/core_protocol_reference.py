@@ -43,6 +43,22 @@ def status_frame(sequence: int = 0xABCD, uptime_ms: int = 0x10203040) -> bytes:
     return finish(frame)
 
 
+def uart_control_frame(sequence: int, receiver_uptime_ms: int,
+                       source: bytes | None, source_age_ms: int,
+                       force_neutral: bool = False) -> bytes:
+    """Receiver-owned UART header; never renew source age by retransmission."""
+    if source_age_ms < 0:
+        raise ValueError('negative source age')
+    frame = bytearray(control_frame(sequence, receiver_uptime_ms))
+    if source is not None:
+        decoded = decode(source)
+        if decoded['message_type'] != CONTROL:
+            raise ValueError('UART source must be CONTROL')
+        if not force_neutral and source_age_ms < 100 and decoded['control_flags'] & 1:
+            frame[10:22] = source[10:22]
+    return finish(frame)
+
+
 def decode(frame: bytes) -> dict[str, int | bytes]:
     if len(frame) != FRAME_SIZE:
         raise ValueError("bad length")

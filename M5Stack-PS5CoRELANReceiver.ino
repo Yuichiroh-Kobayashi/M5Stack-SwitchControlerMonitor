@@ -6,6 +6,7 @@
 #include "src/core_protocol/CoreProtocol.h"
 #include "src/core_runtime/Deadline.h"
 #include "src/numeric_ui/NumericDisplay.h"
+#include "src/core_safety/UartOutput.h"
 
 #if !defined(BUILD_TARGET_CORES3SE)
 #error "M5Stack-PS5CoRELANReceiver.ino supports only cores3se."
@@ -56,6 +57,7 @@ struct State {
   IPAddress actualIp;
   bool controlValid=false, controlTimeout=true, haveControl=false;
   uint16_t lastControlSeq=0, statusSeq=0;
+  uint32_t lastControlUptime=0;
   uint32_t lastControlMs=0, controlRx=0, controlCrcFail=0,
            controlInvalid=0, controlSeqGap=0, duplicate=0, stale=0,
            controlRxBacklog=0;
@@ -75,6 +77,7 @@ uint8_t uartBuffer[kFrameSize];
 uint8_t uartLength=0;
 uint8_t drawPhase=0;
 numeric_ui::NumericDisplay numericDisplay;
+core_safety::UartOutput uartOutput;
 uint32_t nextNumericSnapshotMs=0, maxSendLatenessMs=0;
 
 const char* linkText() {
@@ -175,16 +178,23 @@ void processControlFrame(uint32_t now, int packetSize, int read,
       state.haveControl,state.lastControlSeq,header.sequence,missing);
   if (relation==SequenceRelation::Duplicate) { ++state.duplicate; return; }
   if (relation==SequenceRelation::StaleOrReverse) { ++state.stale; return; }
+  if(state.haveControl && uint32_t(header.uptimeMs-state.lastControlUptime)>=0x80000000UL) {
+    ++state.stale;
+    uartOutput.invalidate();
+    state.controlValid=false;
+    neutralize();
+    return;
+  }
   if (relation==SequenceRelation::ForwardGap) state.controlSeqGap+=missing;
   state.haveControl=true;
   state.lastControlSeq=header.sequence;
+  state.lastControlUptime=header.uptimeMs;
   state.lastControlMs=now;
   ++state.controlRx;
   state.controlValid=(payload.controlFlags&kControlInputValid)!=0;
   state.controlTimeout=false;
   if (state.controlValid) applyControl(payload); else neutralize();
-  Serial2.write(frame,kFrameSize);
-  ++state.uartTx;
+  uartOutput.update(payload,now);
 }
 
 void receiveAtMostTwoControlPackets(uint32_t now) {
@@ -224,6 +234,7 @@ void sendStatus(uint32_t now) {
   if (state.controlTimeout) payload.statusFlags|=kStatusControlTimeout;
   if (state.link==LinkON) payload.statusFlags|=kStatusLanLinkOn;
   if (state.controlInvalid||state.controlCrcFail) payload.statusFlags|=kStatusProtocolError;
+  if (uartOutput.backpressure||uartOutput.shortWrites) payload.statusFlags|=kStatusProtocolError;
   if (state.controlSeqGap) payload.statusFlags|=kStatusSequenceGap;
   if (state.battery>=0) payload.statusFlags|=kStatusBatteryValid;
   payload.lastControlSequence=state.lastControlSeq;
@@ -234,7 +245,7 @@ void sendStatus(uint32_t now) {
   payload.invalidFrameCount=static_cast<uint16_t>(min<uint32_t>(
       state.controlInvalid+state.controlCrcFail,65535));
   payload.receiverBatteryPercent=state.battery>=0 ? state.battery : 255;
-  payload.uartState=1;
+  payload.uartState=(uartOutput.backpressure||uartOutput.shortWrites) ? 2 : 1;
   uint8_t frame[kFrameSize];
   encodeStatus(frame,state.statusSeq,now,payload);
   bool sent=false;
@@ -259,7 +270,7 @@ void sendAtMostOneStatusFrame(uint32_t now) {
 }
 
 void serviceUartParser() {
-  while (Serial2.available()) {
+  for(uint8_t count=0;count<64 && Serial2.available();++count) {
     const uint8_t value=Serial2.read();
     ++state.uartRxBytes;
     if (uartLength==0 && value!=kMagic0) continue;
@@ -425,10 +436,15 @@ void updateNumericUi(uint32_t now) {
     numericDisplay.number(22,numericDisplay.deferred); numericDisplay.number(23,state.controlInvalid);
   }
   releaseExternalSpiDevices();
-  numericDisplay.service(nextStatusMs);
+  const uint32_t deadline=int32_t(uartOutput.nextMs-nextStatusMs)<0 ? uartOutput.nextMs : nextStatusMs;
+  numericDisplay.service(deadline);
 }
 
 void logStatus(uint32_t now) {
+  Serial.printf("UART_PERIOD_MS=10 UART_NEUTRAL_TX=%lu UART_BACKPRESSURE=%lu UART_SHORT_WRITE=%lu UART_SCHEDULE_SKIP=%lu UART_MAX_LATE_MS=%lu UART_SOURCE_TIMEOUT=%lu\n",
+    (unsigned long)uartOutput.neutralSent,(unsigned long)uartOutput.backpressure,
+    (unsigned long)uartOutput.shortWrites,(unsigned long)uartOutput.skips,
+    (unsigned long)uartOutput.maxLateMs,(unsigned long)uartOutput.sourceTimeouts);
   Serial.printf("TRANSPORT_PERIOD_MS=%lu MAX_SEND_LATE_MS=%lu NUMERIC_UI=%u LCD_MAX_US=%lu LCD_DEFER=%lu LCD_FIELDS=%lu\n",
     (unsigned long)Config::kPeriodMs,(unsigned long)maxSendLatenessMs,PRODUCT_NUMERIC_UI,
     (unsigned long)numericDisplay.maxUnitUs,(unsigned long)numericDisplay.deferred,
@@ -467,6 +483,7 @@ void setup() {
   Serial.begin(115200);
   prepareExternalPins();
   pinMode(SERIAL2_RX_PIN,INPUT_PULLUP);
+  Serial2.setTxBufferSize(0); // Single writer uses FIFO capacity, no software backlog.
   Serial2.begin(115200,SERIAL_8N1,SERIAL2_RX_PIN,SERIAL2_TX_PIN);
   state.resetReason=esp_reset_reason();
   neutralize();
@@ -476,6 +493,8 @@ void setup() {
     numericDisplay.begin("CoRE numeric / dev") ? "OK" : "FAIL");
   state.selfTestOk=selfTest();
   Serial.printf("PROTOCOL_SELF_TEST=%s\n",state.selfTestOk?"OK":"FAIL");
+  uartOutput.nextMs=millis();
+  if(state.selfTestOk) uartOutput.service(Serial2,millis()); // Startup invalid neutral.
   if(state.selfTestOk) initializeLan();
   char ipText[16];
   snprintf(ipText,sizeof(ipText),"%u.%u.%u.%u",state.actualIp[0],state.actualIp[1],
@@ -485,6 +504,7 @@ void setup() {
     state.udpReady?"OK":"SKIP");
   updateBattery();
   const uint32_t now=millis();
+  uartOutput.nextMs=now; // End setup without replaying missed runtime deadlines.
   nextStatusMs=now+Config::kStatusPhaseMs;
   lastRateMs=now;
   nextNumericSnapshotMs=now;
@@ -496,9 +516,12 @@ void loop() {
   ++state.loopCount;
   M5.update();
   uint32_t now=millis();
+  serviceTimeout(now); // Expire sequence baseline before accepting a restarted Sender.
   if(state.udpReady) receiveAtMostTwoControlPackets(now);
   serviceUartParser();
-  serviceTimeout(now);
+  serviceTimeout(millis());
+  if(state.selfTestOk) uartOutput.service(Serial2,millis());
+  state.uartTx=uartOutput.sent;
   if(now-lastLinkMs>=Config::kLinkPollMs) {
     lastLinkMs=now;
     if(state.w5500) pollLink();

@@ -471,7 +471,7 @@ CoreS3 SE積層診断スケッチの `cores3se` ビルドのみを実施しま�
 
 上記の旧 `build.ps1` は依存不足時の非固定version installやglobal library patchを含みます。現在の診断・release証拠にはそのまま使わず、隔離依存関係と固定versionのworkflowを確認してください。
 
-現在の調査状況は [調査ステータス](docs/ai/investigation-status.md)、QUESTiXとジュニアロボットキット向けUARTの検討は [共通UART設計案](docs/uart-downstream-common-protocol-design.md) を参照してください。ASCII UART案は未採用で、現在の製品出力は引き続き上記32-byte binaryです。
+現在の調査状況は [調査ステータス](docs/ai/investigation-status.md) を参照してください。Mega2560向けには [Receiver独立UART・停止と再操作の契約](docs/uart-mega-contract.md) を採用しました。UARTは同じ32-byte binary形式で、Receiver自身の連番・時刻を持ち、無効入力や通信断時にneutralを送ります。Mega側はneutral確認後にLを押し直して操作を再開します。実機適合は未検証です。QUESTiX向けの [共通UART設計案](docs/uart-downstream-common-protocol-design.md) とASCII adapterは別判断・未採用です。
 
 開発中の100Hz通信・25Hz数値LCD・低SPIの目標と現在の実装境界は[開発目標](docs/development-targets.md)、管理項目は[Issue一覧](docs/development-issues.md)を参照してください。これらは実機での達成・製品サポートを示すものではありません。
 
