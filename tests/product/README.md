@@ -22,6 +22,10 @@ Digital ZL/ZR become trigger0/255 while preserving their button bits. The caller
 
 `SENDER_USB_ONLY=1` skips W5500 initialization and all CONTROL/STATUS traffic, holds W5500 in reset, initializes shared SPI once and exercises the product parser/UI. Product mode keeps LAN-before-USB initialization. This is not permission to change wiring or upload; freeze exact COM/PnP and candidate first.
 
+For passive USB intake, select `-Cases sender-usb-only -UsbIntake 1` with the same isolated build command. Other case combinations are rejected. The default builds still select all three cases with intake disabled. `SENDER_USB_INTAKE=1` is compile-time restricted to USB-only mode: it records report length, callback ID flag, eight raw bytes, effective decoded values, and cumulative button/hat/axis observations once per second. At uptime >=5 seconds, after input becomes valid, it makes one attempt to read configuration 0 and its single HID report descriptor using standard GET_DESCRIPTOR requests. Descriptor buffers are bounded, contiguous offsets and advertised lengths are checked, and a failed read is never retried or hidden by a reset. The generic UHS helper's fixed128-byte report-descriptor request is avoided: this diagnostic requests the length advertised in the configuration descriptor. No HID output reports are sent.
+
+The one-time descriptor reads and additional serial text change timing. Treat this as an identified intake diagnostic, not a product performance or durability comparator. Passive neutral observations can confirm the descriptor/report shape and values seen by the product parser; they do not validate physical button/direction mapping, turbo/macro settings, reconnect behavior, or screen legibility. Manual USB-only mapping remains required before LAN integration.
+
 Older DG-D tests under tests/usb-lan-gate-dg-d intentionally need local frozen evidence. They are not substituted for portable product tests.
 
 ## Low-clock and timing/display candidates

@@ -30,6 +30,15 @@
 #ifndef SENDER_USB_ONLY
 #define SENDER_USB_ONLY 0
 #endif
+#ifndef SENDER_USB_INTAKE
+#define SENDER_USB_INTAKE 0
+#endif
+static_assert(SENDER_USB_INTAKE==0 || (SENDER_USB_INTAKE==1 && SENDER_USB_ONLY==1),
+              "USB intake is available only in a USB-only diagnostic build");
+#if SENDER_USB_INTAKE
+#include "src/controller_profile/UsbIntake.h"
+controller_profile::UsbIntake usbIntake;
+#endif
 static_assert(SENDER_USB_ONLY == 0 || SENDER_USB_ONLY == 1, "USB-only must be 0 or 1");
 static_assert(SENDER_DIAGNOSTIC_MODE >= 1 && SENDER_DIAGNOSTIC_MODE <= 4,
               "SENDER_DIAGNOSTIC_MODE must be 1 (link), 2 (TX), 3 (RX), or 4 (full duplex)");
@@ -109,7 +118,11 @@ class ControllerParser : public HIDReportParser {
   void Parse(USBHID*, bool hasReportId, uint8_t len, uint8_t* report) override {
     ++state.hidReports;
     controllerInput.observe(Hid.isReady(), Hid.vid(), Hid.pid());
-    if (!controllerInput.accept(hasReportId, report, len, millis())) ++rejectedReports;
+    const bool accepted=controllerInput.accept(hasReportId, report, len, millis());
+    if (!accepted) ++rejectedReports;
+#if SENDER_USB_INTAKE
+    usbIntake.observe(hasReportId,len,report,accepted,controllerInput.value());
+#endif
   }
   uint32_t rejectedReports=0;
 } parser;
@@ -470,6 +483,9 @@ void drawControllerInfo(uint32_t now) {
 }
 
 void logStatus(uint32_t now) {
+#if SENDER_USB_INTAKE
+  usbIntake.log(now,controllerInput.effective(now),inputValid(now));
+#endif
   Serial.printf("TRANSPORT_PERIOD_MS=%lu MAX_SEND_LATE_MS=%lu NUMERIC_UI=%u LCD_MAX_US=%lu LCD_DEFER=%lu LCD_FIELDS=%lu\n",
     (unsigned long)Config::kPeriodMs,(unsigned long)maxSendLatenessMs,PRODUCT_NUMERIC_UI,
     (unsigned long)numericDisplay.maxUnitUs,(unsigned long)numericDisplay.deferred,
@@ -608,6 +624,13 @@ void loop() {
   uint32_t now=millis();
   updateUsbIdentity();
   if (state.udpReady && Config::kStatusRxEnabled) receiveOneStatusPacket(now);
+#if SENDER_USB_INTAKE
+  if(now>=5000 && inputValid(now)) {
+    prepareForUsbAccess();
+    usbIntake.readDescriptorsOnce(Usb,Hid.GetAddress());
+    releaseExternalSpiDevices();
+  }
+#endif
   serviceUsbTask();
   now=millis();
   updateUsbIdentity();

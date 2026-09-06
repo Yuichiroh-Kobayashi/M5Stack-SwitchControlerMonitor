@@ -4,10 +4,15 @@ param(
     [string]$LibraryRoot='',
     [string]$OutputRoot='',
     [ValidateSet(10,20)][int]$PeriodMs=10,
-    [ValidateSet(0,1)][int]$NumericUi=1
+    [ValidateSet(0,1)][int]$NumericUi=1,
+    [ValidateSet('receiver','sender','sender-usb-only')][string[]]$Cases=@('receiver','sender','sender-usb-only'),
+    [ValidateSet(0,1)][int]$UsbIntake=0
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
+if($UsbIntake -and ($Cases.Count -ne 1 -or $Cases[0] -ne 'sender-usb-only')) {
+    throw 'USB intake requires exactly -Cases sender-usb-only'
+}
 $repoRoot=Split-Path -Parent $PSScriptRoot
 $workspacePrefix=[IO.Path]::GetFullPath($repoRoot).TrimEnd('\')+'\'
 function Assert-WorkspacePath([string]$Path) {
@@ -61,6 +66,7 @@ $plans=@(
 )
 $results=@()
 foreach($plan in $plans) {
+    if($plan.Name -notin $Cases){continue}
     $caseRoot=Join-Path $OutputRoot $plan.Name
     $sketch=Join-Path $caseRoot ([IO.Path]::GetFileNameWithoutExtension($plan.Sketch))
     $build=Join-Path $caseRoot 'build'
@@ -78,7 +84,7 @@ foreach($plan in $plans) {
       '-DARDUINO_USB_MODE=1','-DARDUINO_USB_CDC_ON_BOOT=1','-DARDUINO_USB_MSC_ON_BOOT=0',
       '-DARDUINO_USB_DFU_ON_BOOT=0','-DSERIAL2_RX_PIN=18','-DSERIAL2_TX_PIN=17',
       "-DSENDER_USB_ONLY=$($plan.UsbOnly)","-DPRODUCT_TRANSPORT_PERIOD_MS=$PeriodMs",
-      "-DPRODUCT_NUMERIC_UI=$NumericUi") -join ' '
+      "-DPRODUCT_NUMERIC_UI=$NumericUi","-DSENDER_USB_INTAKE=$UsbIntake") -join ' '
     $argsList=@('--config-file',$ConfigFile,'compile','--verbose','--clean','--jobs','8',
       '--fqbn','m5stack:esp32:m5stack_cores3','--build-path',$build)
     foreach($lib in $libraries){$argsList+=@('--library',$lib.Path)}
