@@ -1,6 +1,6 @@
 # CoRE LAN development targets
 
-User-confirmed 2026-09-06. These are development acceptance targets, not claims of installed firmware or physical qualification. The current implementation remains at 20ms until the cadence implementation and compatibility checks are complete.
+User-confirmed 2026-09-06. These are development acceptance targets, not claims of installed firmware or physical qualification. The current source candidate defaults to 10ms communication and 40ms numeric snapshots. Physical qualification is pending. Explicit20ms/legacy-UI build options preserve comparison conditions.
 
 | Item | Target |
 |---|---|
@@ -15,7 +15,7 @@ User-confirmed 2026-09-06. These are development acceptance targets, not claims 
 
 Develop from the current product source. Implement the HORI profile and pass USB-only mapping before product LAN integration. Do not change PHY mode or reset strategy as part of clock reduction. Receiver invalid/stale UART output needs a separate safety correction; the proposed ASCII adapter is not adopted.
 
-Track durable outcomes in this repository's GitHub Issues. The integration parent owns physical mapping, 60-second screening, 10-minute integration, disconnect/reconnect and 60-minute durability. Implementation children may have a nonphysical boundary, but are not closed before accepted changes and evidence meet their acceptance criteria.
+Track durable outcomes in the [Issue index](development-issues.md). Integration #7 owns physical mapping, 60-second screening, 10-minute integration, disconnect/reconnect and 60-minute durability. Implementation children may have a nonphysical boundary, but are not closed before accepted changes and evidence meet their acceptance criteria.
 
 ## Timing acceptance to freeze before physical integration
 

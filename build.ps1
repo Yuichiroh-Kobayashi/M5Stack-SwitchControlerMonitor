@@ -448,8 +448,8 @@ if ($SketchName -in @("M5Stack-PS5CoRELANSender.ino", "M5Stack-PS5CoRELANReceive
     Copy-Item -LiteralPath (Join-Path $CoreProtocolSource "CoreProtocol.h") -Destination $CoreProtocolDestination -Force
     Copy-Item -LiteralPath (Join-Path $CoreProtocolSource "CoreProtocol.cpp") -Destination $CoreProtocolDestination -Force
     Write-Output "Core protocol module: $CoreProtocolDestination"
-    if ($SketchName -eq "M5Stack-PS5CoRELANSender.ino") {
-        Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'src\controller_profile') -Destination (Join-Path $BuildSketchDir 'src') -Recurse
+    foreach ($module in @('controller_profile','core_runtime','numeric_ui')) {
+        Copy-Item -LiteralPath (Join-Path $PSScriptRoot "src\$module") -Destination (Join-Path $BuildSketchDir 'src') -Recurse
     }
 }
 

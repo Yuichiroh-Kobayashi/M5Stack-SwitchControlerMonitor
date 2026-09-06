@@ -4,6 +4,8 @@
 #include <EthernetUdp.h>
 #include <esp_system.h>
 #include "src/core_protocol/CoreProtocol.h"
+#include "src/core_runtime/Deadline.h"
+#include "src/numeric_ui/NumericDisplay.h"
 
 #if !defined(BUILD_TARGET_CORES3SE)
 #error "M5Stack-PS5CoRELANReceiver.ino supports only cores3se."
@@ -21,7 +23,7 @@
 namespace Config {
 constexpr uint8_t kLanCs=13, kLanInt=10, kLanReset=0;
 constexpr uint16_t kPort=50001;
-constexpr uint32_t kPeriodMs=20, kStatusPhaseMs=10, kTimeoutMs=100;
+constexpr uint32_t kPeriodMs=core_runtime::kTransportPeriodMs, kStatusPhaseMs=kPeriodMs/2, kTimeoutMs=100;
 constexpr uint32_t kLinkPollMs=250, kDrawMs=100, kBatteryMs=1000,
                    kSerialMs=1000;
 const IPAddress kLocalIp(192,168,50,20), kPeerIp(192,168,50,10);
@@ -45,6 +47,7 @@ struct ReceivedPadState {
   bool btnMinus=false, btnPlus=false, btnHome=false, btnCapture=false;
   bool btnLStick=false, btnRStick=false;
   uint8_t dpad=8, lX=128, lY=128, rX=128, rY=128;
+  uint8_t lTrigger=0,rTrigger=0;
 } rxPadState;
 
 struct State {
@@ -71,6 +74,8 @@ uint32_t nextStatusMs=Config::kStatusPhaseMs;
 uint8_t uartBuffer[kFrameSize];
 uint8_t uartLength=0;
 uint8_t drawPhase=0;
+numeric_ui::NumericDisplay numericDisplay;
+uint32_t nextNumericSnapshotMs=0, maxSendLatenessMs=0;
 
 const char* linkText() {
   return state.link==LinkON ? "ON" : state.link==LinkOFF ? "OFF" : "UNKNOWN";
@@ -102,6 +107,7 @@ void applyControl(const ControlPayload& payload) {
   rxPadState.dpad=payload.dpad;
   rxPadState.lX=payload.leftX; rxPadState.lY=payload.leftY;
   rxPadState.rX=payload.rightX; rxPadState.rY=payload.rightY;
+  rxPadState.lTrigger=payload.leftTrigger; rxPadState.rTrigger=payload.rightTrigger;
 }
 
 inline void prepareForLanAccess() { digitalWrite(Config::kLanCs, HIGH); }
@@ -245,12 +251,11 @@ void sendStatus(uint32_t now) {
 }
 
 void sendAtMostOneStatusFrame(uint32_t now) {
-  if (static_cast<int32_t>(now-nextStatusMs)<0) return;
+  const auto due=core_runtime::takeDeadline(now,nextStatusMs,Config::kPeriodMs);
+  if (!due.ready) return;
+  state.statusScheduleSkip+=due.skipped;
+  if(due.lateness>maxSendLatenessMs) maxSendLatenessMs=due.lateness;
   sendStatus(now);
-  uint32_t advanced=0;
-  do { nextStatusMs+=Config::kPeriodMs; ++advanced; }
-  while (static_cast<int32_t>(now-nextStatusMs)>=0);
-  if (advanced>1) state.statusScheduleSkip+=advanced-1;
 }
 
 void serviceUartParser() {
@@ -404,7 +409,30 @@ void drawStatus(uint32_t now) {
   drawPhase=(drawPhase+1)%3;
 }
 
+void updateNumericUi(uint32_t now) {
+  numericDisplay.text(0,state.controlValid ? "OK" : "INVALID");
+  numericDisplay.text(1,state.controlTimeout ? "TIMEOUT" : "OK");
+  numericDisplay.text(2,linkText());
+  if(core_runtime::takeDeadline(now,nextNumericSnapshotMs,core_runtime::kDisplayPeriodMs).ready) {
+    numericDisplay.pad(state.controlValid ? rxPadState : ReceivedPadState{});
+    numericDisplay.number(11,state.controlRxPerSec);
+    numericDisplay.number(12,state.statusTx); numericDisplay.number(13,state.controlRx);
+    if(state.haveControl) numericDisplay.number(14,now-state.lastControlMs); else numericDisplay.text(14,"--");
+    if(state.battery>=0) numericDisplay.number(15,state.battery); else numericDisplay.text(15,"--");
+    numericDisplay.number(16,state.controlCrcFail); numericDisplay.number(17,state.controlSeqGap);
+    numericDisplay.number(18,state.statusScheduleSkip); numericDisplay.number(19,maxSendLatenessMs);
+    numericDisplay.text(20,"N/A"); numericDisplay.number(21,numericDisplay.maxUnitUs);
+    numericDisplay.number(22,numericDisplay.deferred); numericDisplay.number(23,state.controlInvalid);
+  }
+  releaseExternalSpiDevices();
+  numericDisplay.service(nextStatusMs);
+}
+
 void logStatus(uint32_t now) {
+  Serial.printf("TRANSPORT_PERIOD_MS=%lu MAX_SEND_LATE_MS=%lu NUMERIC_UI=%u LCD_MAX_US=%lu LCD_DEFER=%lu LCD_FIELDS=%lu\n",
+    (unsigned long)Config::kPeriodMs,(unsigned long)maxSendLatenessMs,PRODUCT_NUMERIC_UI,
+    (unsigned long)numericDisplay.maxUnitUs,(unsigned long)numericDisplay.deferred,
+    (unsigned long)numericDisplay.drawn);
   char ipText[16];
   snprintf(ipText,sizeof(ipText),"%u.%u.%u.%u",state.actualIp[0],state.actualIp[1],
            state.actualIp[2],state.actualIp[3]);
@@ -441,6 +469,8 @@ void setup() {
   neutralize();
   M5.Display.setRotation(1);
   M5.Display.fillScreen(BLACK);
+  if (PRODUCT_NUMERIC_UI) Serial.printf("NUMERIC_UI_INIT=%s\n",
+    numericDisplay.begin("CoRE numeric / dev") ? "OK" : "FAIL");
   state.selfTestOk=selfTest();
   Serial.printf("PROTOCOL_SELF_TEST=%s\n",state.selfTestOk?"OK":"FAIL");
   if(state.selfTestOk) initializeLan();
@@ -454,7 +484,8 @@ void setup() {
   const uint32_t now=millis();
   nextStatusMs=now+Config::kStatusPhaseMs;
   lastRateMs=now;
-  drawStatus(now);
+  nextNumericSnapshotMs=now;
+  if (!PRODUCT_NUMERIC_UI) drawStatus(now);
 }
 
 void loop() {
@@ -476,7 +507,8 @@ void loop() {
     updateBattery();
   }
   updateRates(now);
-  if(now-lastDrawMs>=Config::kDrawMs) { lastDrawMs=now; drawStatus(now); }
+  if(PRODUCT_NUMERIC_UI) updateNumericUi(millis());
+  else if(now-lastDrawMs>=Config::kDrawMs) { lastDrawMs=now; drawStatus(now); }
   if(now-lastSerialMs>=Config::kSerialMs) { lastSerialMs=now; logStatus(now); }
   const uint32_t elapsedUs=micros()-loopStartUs;
   if(elapsedUs>state.maxLoopDurationUs) state.maxLoopDurationUs=elapsedUs;

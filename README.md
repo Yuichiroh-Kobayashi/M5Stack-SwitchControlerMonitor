@@ -451,7 +451,7 @@ CoreS3 SE積層診断スケッチの `cores3se` ビルドのみを実施しま�
 - `M5Stack-PS5CoRELANSender.ino`: `192.168.50.10`からCONTROLを送信し、STATUSを受信するUDP endpoint
 - `M5Stack-PS5CoRELANReceiver.ino`: `192.168.50.20`でCONTROLを受信し、STATUSを返信するUDP endpoint
 
-製品通信はUDP port `50001`、固定32 byte frame、20 ms周期、100 ms timeout、CRC-16/CCITT-FALSEを使用します。ReceiverのPort C UARTも同じ32 byte frameを115200 8N1で出力します。wire formatの正本は`src/core_protocol/`と`docs/ai/protocol-and-safety.md`です。
+製品開発候補はUDP port `50001`、固定32 byte frame、10 ms周期、100 ms timeout、CRC-16/CCITT-FALSEを使用します。ReceiverのPort C UARTも同じ32 byte frameを115200 8N1で出力します。wire formatの正本は`src/core_protocol/`と`docs/ai/protocol-and-safety.md`です。
 
 製品Senderの現在の初期化順序はLAN/W5500が先、USB/MAX3421Eが後です。USB_FIRST診断ではRUNNINGへ到達せず、LAN_FIRSTでは到達した実測がありますが、LAN_FIRSTでもDualSenseは後にdetachしました。初期化成立とcontroller安定性は別の判定です。
 
@@ -473,9 +473,9 @@ CoreS3 SE積層診断スケッチの `cores3se` ビルドのみを実施しま�
 
 現在の調査状況は [調査ステータス](docs/ai/investigation-status.md)、QUESTiXとジュニアロボットキット向けUARTの検討は [共通UART設計案](docs/uart-downstream-common-protocol-design.md) を参照してください。ASCII UART案は未採用で、現在の製品出力は引き続き上記32-byte binaryです。
 
-## ライセンス
+開発中の100Hz通信・25Hz数値LCD・低SPIの目標と現在の実装境界は[開発目標](docs/development-targets.md)、管理項目は[Issue一覧](docs/development-issues.md)を参照してください。これらは実機での達成・製品サポートを示すものではありません。
 
-開発中の100Hz通信・25Hz数値LCD・低SPIの目標と現在の実装境界は[開発目標](docs/development-targets.md)を参照してください。これらは実機での達成・製品サポートを示すものではありません。
+## ライセンス
 
 [MIT License](LICENSE)
 

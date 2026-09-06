@@ -23,3 +23,13 @@ Digital ZL/ZR become trigger0/255 while preserving their button bits. The caller
 `SENDER_USB_ONLY=1` skips W5500 initialization and all CONTROL/STATUS traffic, holds W5500 in reset, initializes shared SPI once and exercises the product parser/UI. Product mode keeps LAN-before-USB initialization. This is not permission to change wiring or upload; freeze exact COM/PnP and candidate first.
 
 Older DG-D tests under tests/usb-lan-gate-dg-d intentionally need local frozen evidence. They are not substituted for portable product tests.
+
+## Low-clock and timing/display candidates
+
+Run `python tools/prepare_product_libraries.py --output build-temp/<new-generation>` to create an8MHz normal/8MHz TX library candidate while preserving USB26MHz. `--usb-hz 8000000` creates a separate USB clock comparison. Both input and output must be workspace-local build-temp paths. The tool verifies pinned versions and exact original header hashes, refuses existing/overlapping output paths, checks patch occurrence counts, verifies that the source tree is unchanged, and writes a before/after manifest. No network or package manager is used.
+
+Build that candidate with `tools/product_build.ps1 -ConfigFile <isolated-cli.json> -LibraryRoot build-temp/<new-generation>/libraries`. Default software options are `-PeriodMs 10 -NumericUi 1`. For a single-factor clock comparison, hold software options constant; `-PeriodMs 20 -NumericUi 0` retains the earlier cadence/drawing behavior for a separate comparator. It is not valid to attribute a combined clock/UI/period improvement to clock alone.
+
+The transport deadline helper advances in constant time, records skipped periods and maximum lateness, preserves phase and never replays a backlog of sends. The numeric UI samples values every40ms, prioritizes CTRL/PEER/LINK changes, coalesces obsolete values, and draws at most one48x8 RGB565 field per service. Fields are paced at least1ms apart and postponed when the next communication deadline is less than two whole milliseconds away. The renderer records maximum unit time, deferred slots and completed fields. A failed allocation/font check disables numeric drawing and reports NUMERIC_UI_INIT=FAIL; it does not fall back to a large blocking transfer.
+
+The host runtime suite exercises wrap/late deadlines and dirty-field selection/coalescing. It does not measure LCD SPI duration, legibility, actual100Hz jitter or USB service intervals. Those remain physical criteria in #7/#12. The32-byte golden vectors and100ms safety timeout remain unchanged. UART invalid/timeout output remains an unresolved safety task in #9; do not connect this candidate to an operating robot on the strength of host/build results.

@@ -136,8 +136,8 @@ The current protocol is frozen unless the user explicitly authorizes a protocol 
 - Uptime: big-endian.
 - Payload: 20 bytes.
 - CRC: CRC-16/CCITT-FALSE in bytes 30-31.
-- Sender CONTROL cadence: 20 ms nominal, 50 Hz.
-- Receiver STATUS cadence: 20 ms nominal, 50 Hz.
+- Sender CONTROL cadence: 10 ms nominal, 100 Hz (user-confirmed development target 2026-09-06; physical qualification pending).
+- Receiver STATUS cadence: 10 ms nominal, 100 Hz; 20 ms is retained only as an explicit comparison build option.
 - Input/peer timeout: 100 ms.
 - Encode and decode fields byte-by-byte.
 - Do not use packed structs, compiler-dependent layout, native-endian casts, or implicit padding.

@@ -191,7 +191,9 @@ foreach ($case in $cases) {
         Copy-Item -LiteralPath (Join-Path $repoRoot "src\core_protocol\CoreProtocol.h") -Destination $coreDestination -Force
         Copy-Item -LiteralPath (Join-Path $repoRoot "src\core_protocol\CoreProtocol.cpp") -Destination $coreDestination -Force
         if ($case.Sketch -eq "M5Stack-PS5CoRELANSender.ino") {
-            Copy-Item -LiteralPath (Join-Path $repoRoot "src\controller_profile") -Destination (Join-Path $sketchDir 'src') -Recurse
+            foreach ($module in @('controller_profile','core_runtime','numeric_ui')) {
+                Copy-Item -LiteralPath (Join-Path $repoRoot "src\$module") -Destination (Join-Path $sketchDir 'src') -Recurse
+            }
         }
     }
 

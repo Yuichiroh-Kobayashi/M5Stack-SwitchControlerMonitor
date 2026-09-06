@@ -2,7 +2,9 @@
 param(
     [Parameter(Mandatory=$true)][string]$ConfigFile,
     [string]$LibraryRoot='',
-    [string]$OutputRoot=''
+    [string]$OutputRoot='',
+    [ValidateSet(10,20)][int]$PeriodMs=10,
+    [ValidateSet(0,1)][int]$NumericUi=1
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop'
@@ -75,7 +77,8 @@ foreach($plan in $plans) {
       '-DBUILD_TARGET_CORES3SE','-DARDUINO_M5STACK_CORES3','-DBOARD_HAS_PSRAM',
       '-DARDUINO_USB_MODE=1','-DARDUINO_USB_CDC_ON_BOOT=1','-DARDUINO_USB_MSC_ON_BOOT=0',
       '-DARDUINO_USB_DFU_ON_BOOT=0','-DSERIAL2_RX_PIN=18','-DSERIAL2_TX_PIN=17',
-      "-DSENDER_USB_ONLY=$($plan.UsbOnly)") -join ' '
+      "-DSENDER_USB_ONLY=$($plan.UsbOnly)","-DPRODUCT_TRANSPORT_PERIOD_MS=$PeriodMs",
+      "-DPRODUCT_NUMERIC_UI=$NumericUi") -join ' '
     $argsList=@('--config-file',$ConfigFile,'compile','--verbose','--clean','--jobs','8',
       '--fqbn','m5stack:esp32:m5stack_cores3','--build-path',$build)
     foreach($lib in $libraries){$argsList+=@('--library',$lib.Path)}

@@ -5,12 +5,14 @@ on:
       - 'src/**'
       - 'tests/product/**'
       - 'tools/core_protocol_reference.py'
+      - 'tools/prepare_product_libraries.py'
       - '.github/workflows/product-host-tests.yml'
   pull_request:
     paths:
       - 'src/**'
       - 'tests/product/**'
       - 'tools/core_protocol_reference.py'
+      - 'tools/prepare_product_libraries.py'
       - '.github/workflows/product-host-tests.yml'
 permissions:
   contents: read

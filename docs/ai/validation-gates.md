@@ -53,8 +53,8 @@ Expected product conditions:
 - The implemented product controller profile's VID/PID is detected.
 - HID reports continue.
 - USB target remains ready.
-- CONTROL: 45-55 Hz.
-- STATUS: 45-55 Hz.
+- CONTROL: 95-105 Hz for the 100Hz development candidate; also record deadline lateness and skipped periods.
+- STATUS: 95-105 Hz for the 100Hz development candidate. Keep the earlier 45-55Hz criteria only in historical 20ms evidence.
 - CRC failures: 0.
 - Unexpected sequence gaps: 0.
 - CONTROL timeout: 0.

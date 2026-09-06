@@ -7,3 +7,4 @@ build-out/
 build-temp/
 upload-*.log
 .vscode/
+__pycache__/

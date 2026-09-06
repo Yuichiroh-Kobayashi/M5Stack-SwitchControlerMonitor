@@ -12,7 +12,7 @@
 - HORI has a product Sender candidate; product USB-only mapping remains unvalidated. Do not begin physical LAN integration before that gate passes.
 - DualSense `054C/0CE6` support is suspended on the current CoreS3 SE + MAX3421E + UHS stack.
 - Do not add OULEKE mappings until the physical unit's descriptors and reports are captured.
-- Preserve the 32-byte protocol, UDP port 50001, 20 ms cadence, 100 ms timeout, big-endian fields, and CRC-16/CCITT-FALSE.
+- Preserve the 32-byte protocol, UDP port 50001, 10 ms candidate cadence (20 ms only for explicit baseline comparison), 100 ms timeout, big-endian fields, and CRC-16/CCITT-FALSE.
 - Use explicit byte encoding; do not introduce packed wire structs.
 - Preserve neutral fail-safe behavior for stale, invalid, disconnected, and unsupported controllers.
 - Do not add automatic USB or ESP resets to hide a detach problem.

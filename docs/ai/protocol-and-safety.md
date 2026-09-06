@@ -22,9 +22,9 @@ Message types:
 Transport parameters:
 
 - UDP port: 50001.
-- Nominal CONTROL frequency: 50 Hz.
-- Nominal STATUS frequency: 50 Hz.
-- Nominal period: 20 ms.
+- Nominal CONTROL frequency: 100 Hz.
+- Nominal STATUS frequency: 100 Hz.
+- Nominal period: 10 ms (user-confirmed target 2026-09-06, implementation candidate; physical qualification pending). The wire format/version is unchanged. An explicit 20 ms comparison build remains available.
 - Validity timeout: 100 ms.
 - UART: exact 32-byte frame, 115200 8N1, no CR/LF and no ASCII conversion.
 

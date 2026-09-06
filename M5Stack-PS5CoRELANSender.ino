@@ -6,6 +6,8 @@
 #include <usbhub.h>
 #include <hiduniversal.h>
 #include "src/core_protocol/CoreProtocol.h"
+#include "src/core_runtime/Deadline.h"
+#include "src/numeric_ui/NumericDisplay.h"
 #include "src/controller_profile/ControllerProfile.h"
 
 #if !defined(BUILD_TARGET_CORES3SE)
@@ -35,7 +37,7 @@ static_assert(SENDER_DIAGNOSTIC_MODE >= 1 && SENDER_DIAGNOSTIC_MODE <= 4,
 namespace Config {
 constexpr uint8_t kLanCs = 13, kLanInt = 10, kLanReset = 0;
 constexpr uint16_t kPort = 50001;
-constexpr uint32_t kPeriodMs = 20, kTimeoutMs = 100;
+constexpr uint32_t kPeriodMs = core_runtime::kTransportPeriodMs, kTimeoutMs = 100;
 constexpr uint32_t kLinkPollMs = 250, kDrawMs = 100, kBatteryMs = 1000,
                    kSerialMs = 1000;
 const IPAddress kLocalIp(192, 168, 50, 10), kPeerIp(192, 168, 50, 20);
@@ -97,6 +99,8 @@ struct State {
 uint32_t nextControlMs=0, lastLinkMs=0, lastDrawMs=0, lastBatteryMs=0,
          lastSerialMs=0, lastRateMs=0, lastUsbServiceUs=0;
 uint8_t drawPhase=0;
+numeric_ui::NumericDisplay numericDisplay;
+uint32_t nextNumericSnapshotMs=0, maxSendLatenessMs=0;
 
 void resetPad() { controllerInput.invalidate(); }
 
@@ -466,6 +470,10 @@ void drawControllerInfo(uint32_t now) {
 }
 
 void logStatus(uint32_t now) {
+  Serial.printf("TRANSPORT_PERIOD_MS=%lu MAX_SEND_LATE_MS=%lu NUMERIC_UI=%u LCD_MAX_US=%lu LCD_DEFER=%lu LCD_FIELDS=%lu\n",
+    (unsigned long)Config::kPeriodMs,(unsigned long)maxSendLatenessMs,PRODUCT_NUMERIC_UI,
+    (unsigned long)numericDisplay.maxUnitUs,(unsigned long)numericDisplay.deferred,
+    (unsigned long)numericDisplay.drawn);
   Serial.printf("CONTROLLER_PROFILE=%s HID_REJECTED=%lu USB_ONLY=%u\n",
     controller_profile::name(controllerInput.profile()),
     (unsigned long)parser.rejectedReports, Config::kUsbOnly);
@@ -501,12 +509,32 @@ void logStatus(uint32_t now) {
 }
 
 void sendAtMostOneControlFrame(uint32_t now) {
-  if (static_cast<int32_t>(now-nextControlMs)<0) return;
-  if (Config::kControlTxEnabled) sendControl(now);
-  uint32_t advanced=0;
-  do { nextControlMs+=Config::kPeriodMs; ++advanced; }
-  while (static_cast<int32_t>(now-nextControlMs)>=0);
-  if (Config::kControlTxEnabled && advanced>1) state.controlScheduleSkip+=advanced-1;
+  const auto due=core_runtime::takeDeadline(now,nextControlMs,Config::kPeriodMs);
+  if (!due.ready) return;
+  if (Config::kControlTxEnabled) {
+    state.controlScheduleSkip+=due.skipped;
+    if(due.lateness>maxSendLatenessMs) maxSendLatenessMs=due.lateness;
+    sendControl(now);
+  }
+}
+
+void updateNumericUi(uint32_t now) {
+  numericDisplay.text(0,!state.hidReady ? "OFF" : !supportedController() ? "UNSUP" : inputValid(now) ? "OK" : "INVALID");
+  numericDisplay.text(1,state.statusTimeout ? "TIMEOUT" : state.statusValid ? "OK" : "INVALID");
+  numericDisplay.text(2,linkText());
+  if(core_runtime::takeDeadline(now,nextNumericSnapshotMs,core_runtime::kDisplayPeriodMs).ready) {
+    numericDisplay.pad(controllerInput.effective(now));
+    numericDisplay.number(11,state.hidReportsPerSecond);
+    numericDisplay.number(12,state.controlTx); numericDisplay.number(13,state.statusRx);
+    if(state.haveStatus) numericDisplay.number(14,now-state.lastStatusMs); else numericDisplay.text(14,"--");
+    if(state.battery>=0) numericDisplay.number(15,state.battery); else numericDisplay.text(15,"--");
+    numericDisplay.number(16,state.statusCrcFail); numericDisplay.number(17,state.statusSeqGap);
+    numericDisplay.number(18,state.controlScheduleSkip); numericDisplay.number(19,maxSendLatenessMs);
+    numericDisplay.number(20,state.maxUsbServiceGapUs); numericDisplay.number(21,numericDisplay.maxUnitUs);
+    numericDisplay.number(22,numericDisplay.deferred); numericDisplay.number(23,parser.rejectedReports);
+  }
+  releaseExternalSpiDevices();
+  if(numericDisplay.service(nextControlMs)) ++state.drawCount;
 }
 
 void updateDisplayAndDiagnostics(uint32_t now) {
@@ -522,7 +550,11 @@ void updateDisplayAndDiagnostics(uint32_t now) {
   }
   updateRates(now);
   const bool drawDue=now-lastDrawMs>=Config::kDrawMs;
-  if (drawDue) {
+  if (PRODUCT_NUMERIC_UI) {
+    serviceUsbTask();
+    updateUsbIdentity();
+    updateNumericUi(millis());
+  } else if (drawDue) {
     lastDrawMs=now;
     drawControllerInfo(now);
   } else {
@@ -545,6 +577,8 @@ void setup() {
   resetPad();
   M5.Display.setRotation(1);
   M5.Display.fillScreen(BLACK);
+  if (PRODUCT_NUMERIC_UI) Serial.printf("NUMERIC_UI_INIT=%s\n",
+    numericDisplay.begin("CoRE numeric / dev") ? "OK" : "FAIL");
   state.selfTestOk=selfTest();
   Serial.printf("PROTOCOL_SELF_TEST=%s\n",state.selfTestOk?"OK":"FAIL");
   if (state.selfTestOk) {
@@ -562,7 +596,8 @@ void setup() {
   const uint32_t now=millis();
   nextControlMs=now;
   lastRateMs=now;
-  drawControllerInfo(now);
+  nextNumericSnapshotMs=now;
+  if (!PRODUCT_NUMERIC_UI) drawControllerInfo(now);
 }
 
 void loop() {
