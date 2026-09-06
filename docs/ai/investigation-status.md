@@ -13,7 +13,7 @@
 
 1. [Issue一覧](../development-issues.md)の#8/#10/#11/#12/#13に対応するHORI・低SPI生成器・100Hz周期・25Hz数値表示・隔離ビルド候補をレビューする。旧診断Runnerのoffline回帰は保持する。
 2. 製品USB-only mappingを#7で確認する。合格前に製品LAN実機試験へ進まない。今回の作業はupload/配線変更を含まない。
-3. #9でUARTのinvalid/timeout時neutral出力とsequence/復帰契約を確定する。#15の[共通化設計](../uart-downstream-common-protocol-design.md)は別判断で、ASCII adapter案は未採用。
+3. #9/#15の[Receiver独立UART・Mega2560契約](../uart-mega-contract.md)は採用・ソフトウェア実装済み。[工程Bの検証記録](../validation/product-stage-b-20260906.md)にbuild/testsとMegaへのsource反映を記録する。実機UART停止・復帰のgateは未実施。QUESTiX向け[共通化設計](../uart-downstream-common-protocol-design.md)は別判断で、ASCII adapter案は未採用。
 4. #14で[non-null read診断設計](../usb-lan-next-non-null-read-design.md)と低SPI/UI比較の因子を分離する。新しいnon-null診断の物理PASSを意味しない。
 5. 各候補のauthorityと測定条件を固定し、#7のLAN統合・故障・耐久gateへ進む。source/build合格と実機適合は区別する。
 

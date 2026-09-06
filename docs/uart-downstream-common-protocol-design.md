@@ -1,5 +1,7 @@
 # QUESTiX / ジュニアロボットキットの共通UART設計案
 
+後続判断: Mega2560については[Receiver独立binary UART契約](uart-mega-contract.md)を採用し、ソースを変更した。本書のASCII共通化はその前の調査・未採用案として保存する。以下の「未変更」「推奨」等は本書作成時点の記録であり、現在のMega実装を示さない。QUESTiX側は未変更。
+
 2026-09-06、設計・受信契約調査。推奨は **LANの現行32-byte binaryを維持し、M5 ReceiverのUARTをQUESTiX互換7項目ASCIIへ変換する構成**。同じSender/Receiver firmwareを両ロボットに使用し、キット側の `controller.ino` で既存の機能配列へ変換する。
 
 この提案は現行UARTの32-byte契約を変更するため、まだ採用・実装していない。製品firmware、CoreProtocol、QUESTiX repository、添付ZIPは変更していない。コントローラの製品profile実装やUSB/LAN gateとは別の作業である。
