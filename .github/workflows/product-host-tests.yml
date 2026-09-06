@@ -1,0 +1,23 @@
+name: Product host tests
+on:
+  push:
+    paths:
+      - 'src/**'
+      - 'tests/product/**'
+      - 'tools/core_protocol_reference.py'
+      - '.github/workflows/product-host-tests.yml'
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'tests/product/**'
+      - 'tools/core_protocol_reference.py'
+      - '.github/workflows/product-host-tests.yml'
+permissions:
+  contents: read
+jobs:
+  product-host:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - name: Execute product C++ and frozen protocol vectors
+        run: python3 tests/product/run_host_tests.py

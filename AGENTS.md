@@ -18,9 +18,9 @@ The current product direction is:
 - Sender: M5 CoreS3 SE + M5Stack USB Module v1.2 + M5Stack LAN Module 13.2 + Base M5GO Bottom3.
 - Receiver: M5 CoreS3 SE + M5Stack LAN Module 13.2 + Base M5GO Bottom3.
 - USB validation baseline: HORI PAD TURBO, VID/PID `0F0D/0202`, controller switch set to `Switch 2`.
-- Current product LAN Sender profile: the DualSense-specific implementation remains in place.
+- Current product LAN Sender profile: HORI Switch 2 candidate is implemented; USB-only product mapping and integration remain unvalidated.
 - Product-supported controller: none yet.
-- Required product implementation: port the validated HORI profile from the legacy WirelessSender to the product LAN Sender before product LAN integration testing. Current diagnostic work is tracked in `docs/ai/investigation-status.md`; do not substitute a historical handoff's next gate.
+- Required product validation: verify the migrated HORI profile in USB-only operation before product LAN integration testing. Current diagnostic work is tracked in `docs/ai/investigation-status.md`; do not substitute a historical handoff's next gate.
 - Network: wired Ethernet through a switching hub.
 - Product transport: UDP with a fixed binary protocol.
 - Receiver output: UART Port C using the same fixed binary frame.
@@ -33,7 +33,7 @@ QUESTiX is an intended UART downstream (Raspberry Pi 5 / Ubuntu 24.04 / ROS 2 Ja
 
 Product firmware:
 
-- `M5Stack-PS5CoRELANSender.ino`: current LAN sender implementation. It still contains DualSense-specific VID/PID and report-layout handling and does not yet implement the HORI product profile.
+- `M5Stack-PS5CoRELANSender.ino`: current LAN sender implementation. It selects the HORI profile by VID/PID; unsupported controllers, including suspended DualSense, remain neutral.
 - `M5Stack-PS5CoRELANReceiver.ino`: current LAN receiver implementation.
 - `src/core_protocol/CoreProtocol.h`
 - `src/core_protocol/CoreProtocol.cpp`
@@ -169,7 +169,7 @@ USB-validated development baseline:
 
 - HORI PAD TURBO `0F0D/0202` in `Switch 2` hardware mode.
 - The legacy parser is validated by USB-only tests.
-- The product LAN Sender profile is not yet implemented. Connecting HORI to it leaves input invalid and CONTROL neutral.
+- The product LAN Sender profile is implemented as a candidate. Only valid 8-byte HORI input becomes active; product USB-only mapping, LAN/fault/durability gates remain required.
 
 Suspended on the current stack:
 

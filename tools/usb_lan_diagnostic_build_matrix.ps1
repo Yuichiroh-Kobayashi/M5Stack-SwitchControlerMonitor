@@ -190,6 +190,9 @@ foreach ($case in $cases) {
         New-Item -ItemType Directory -Force -Path $coreDestination | Out-Null
         Copy-Item -LiteralPath (Join-Path $repoRoot "src\core_protocol\CoreProtocol.h") -Destination $coreDestination -Force
         Copy-Item -LiteralPath (Join-Path $repoRoot "src\core_protocol\CoreProtocol.cpp") -Destination $coreDestination -Force
+        if ($case.Sketch -eq "M5Stack-PS5CoRELANSender.ino") {
+            Copy-Item -LiteralPath (Join-Path $repoRoot "src\controller_profile") -Destination (Join-Path $sketchDir 'src') -Recurse
+        }
     }
 
     $defines = @(

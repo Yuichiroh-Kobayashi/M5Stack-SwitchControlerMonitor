@@ -7,7 +7,7 @@
 - C2ではUSB/HID failureを観測。DG-Dの即時null-discard診断はS1/T1でPASSしたが、root causeは未解決。payloadのnon-null転送やapplication処理の必要性は未分離。
 - DG-D Runnerは、切断後の `VID=0000 PID=0000` を一律に証拠不成立としていた。今回、開始前のHORI ready証拠、開始順、report実績、ready drop、terminal failure reasonを確認する限定処理に修正した。PASS条件、peer刺激成立、B37の制御異常によるBLOCKEDは維持。
 - これは将来の判定器修正。既存DG-D freezeのsource/hash/結果は書き換えない。変更後Runnerで物理試験を行うには、新しいimplementation authorityのレビューが必要。
-- HORI製品profileは未実装、製品対応controllerは引き続き無し。診断PASSを製品LAN統合・耐久性のPASSと扱わない。
+- HORI製品profileは候補実装済み（Issue #8）、製品USB-only mappingは未検証、製品対応controllerは引き続き無し。診断PASSを製品LAN統合・耐久性のPASSと扱わない。
 
 ## 作業の順序
 

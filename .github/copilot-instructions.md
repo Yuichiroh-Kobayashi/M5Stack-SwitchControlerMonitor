@@ -9,7 +9,7 @@
 ## Critical constraints
 
 - USB validation baseline: HORI PAD TURBO `0F0D/0202`, hardware mode `Switch 2`.
-- HORI is USB-validated but not yet implemented in the product LAN Sender. Do not generate LAN-integration tests before the HORI product profile and mapping are implemented and validated.
+- HORI has a product Sender candidate; product USB-only mapping remains unvalidated. Do not begin physical LAN integration before that gate passes.
 - DualSense `054C/0CE6` support is suspended on the current CoreS3 SE + MAX3421E + UHS stack.
 - Do not add OULEKE mappings until the physical unit's descriptors and reports are captured.
 - Preserve the 32-byte protocol, UDP port 50001, 20 ms cadence, 100 ms timeout, big-endian fields, and CRC-16/CCITT-FALSE.

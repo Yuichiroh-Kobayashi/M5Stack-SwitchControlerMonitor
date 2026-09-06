@@ -23,14 +23,14 @@ None.
   - WirelessSender long run: 600 seconds, pass.
   - HIDUniversal isolation diagnostic: 600 seconds, pass.
 - Total validated USB-only runtime exceeded 22 minutes with no detach.
-- The current product LAN Sender does not yet parse the HORI report layout. It still selects only DualSense `054C/0CE6` and assumes DualSense report IDs and offsets.
-- Connecting HORI to the current product Sender leaves `inputValid` false and CONTROL neutral.
+- The product LAN Sender now selects the HORI candidate in `src/controller_profile/ControllerProfile.h`; suspended DualSense remains unsupported.
+- The candidate accepts exactly 8 bytes without a report-ID prefix; captured hat `0x0F` maps to protocol center `8`. Invalid reports clear the input session immediately. Product USB-only mapping and all integration gates remain unvalidated.
 - `M5Stack-SwitchController2CoREWirelessSender.ino` is the validated parser reference; its legacy transport is not the product LAN protocol.
 
 Required next steps:
 
-1. Port the HORI profile into the product Sender.
-2. Select it by VID/PID `0F0D/0202`.
+1. Review the implemented HORI profile and its host vectors (Issue #8).
+2. Verify VID/PID `0F0D/0202` selection on the actual product candidate.
 3. Validate report ID and report length before parsing.
 4. Confirm neutral values and every required mapping in USB-only operation.
 5. Begin LAN integration only after the product profile passes.

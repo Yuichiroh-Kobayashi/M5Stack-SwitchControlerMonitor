@@ -7,12 +7,12 @@ UI/電源制御は `M5Unified` 前提で実装しており、`M5Stack.h` では�
 
 ## 現在の開発状態
 
-- 製品LAN Sender `M5Stack-PS5CoRELANSender.ino`には、現在もDualSense専用のVID/PID判定とreport解析が残っています。
+- 製品LAN SenderにはHORI Switch 2 profileの候補実装を追加しました。未対応機器（DualSenseを含む）はneutralを維持します。
 - Product-supported controllerは現在ありません。
 - DualSense `054C/0CE6`は、現行CoreS3 SE／MAX3421E／USB Host Shield Library 1.7.0構成では採用を停止しています。
 - HORI PAD TURBO `0F0D/0202`（本体モード`Switch 2`）は、Legacy WirelessSenderおよびUSB-only診断で合計22分以上detachなしでした。
-- HORI profileはまだ製品LAN Senderへ実装されていません。現状の製品SenderへHORIを接続しても入力は無効となり、CONTROLは中立値のままです。
-- 次工程は、Legacy WirelessSenderのHORI parserを製品Senderへ移植し、USB-only mappingを確認してからLAN統合へ進むことです。
+- HORI製品候補は8-byte入力を検証し、D-pad中央値0x0Fを8へ正規化します。不正report・切断・100ms鮮度切れではneutralとなる設計です。製品実機での確認は未実施です。
+- 次工程は候補のレビュー・USB-only mapping確認です。LAN統合はその合格後です。実装はIssue #8、実機適合はIssue #7で管理します。
 - OULEKE（Amazon ASIN `B0FL6VS3JF`）は現物評価待ちです。
 
 詳細は`docs/ai/controller-compatibility.md`と`docs/cores3se-usb-lan-root-cause-report.md`を参照してください。

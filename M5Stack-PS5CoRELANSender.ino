@@ -6,6 +6,7 @@
 #include <usbhub.h>
 #include <hiduniversal.h>
 #include "src/core_protocol/CoreProtocol.h"
+#include "src/controller_profile/ControllerProfile.h"
 
 #if !defined(BUILD_TARGET_CORES3SE)
 #error "M5Stack-PS5CoRELANSender.ino supports only cores3se."
@@ -24,21 +25,26 @@
 #ifndef SENDER_DIAGNOSTIC_MODE
 #define SENDER_DIAGNOSTIC_MODE 4
 #endif
+#ifndef SENDER_USB_ONLY
+#define SENDER_USB_ONLY 0
+#endif
+static_assert(SENDER_USB_ONLY == 0 || SENDER_USB_ONLY == 1, "USB-only must be 0 or 1");
 static_assert(SENDER_DIAGNOSTIC_MODE >= 1 && SENDER_DIAGNOSTIC_MODE <= 4,
               "SENDER_DIAGNOSTIC_MODE must be 1 (link), 2 (TX), 3 (RX), or 4 (full duplex)");
 
 namespace Config {
 constexpr uint8_t kLanCs = 13, kLanInt = 10, kLanReset = 0;
 constexpr uint16_t kPort = 50001;
-constexpr uint32_t kPeriodMs = 20, kTimeoutMs = 100, kInputWindowMs = 100;
+constexpr uint32_t kPeriodMs = 20, kTimeoutMs = 100;
 constexpr uint32_t kLinkPollMs = 250, kDrawMs = 100, kBatteryMs = 1000,
                    kSerialMs = 1000;
 const IPAddress kLocalIp(192, 168, 50, 10), kPeerIp(192, 168, 50, 20);
 const IPAddress kDns(192, 168, 50, 1), kGateway(192, 168, 50, 1),
                 kSubnet(255, 255, 255, 0);
 uint8_t kMac[6] = {0x02, 0x4D, 0x35, 0x53, 0x45, 0x10};
-constexpr bool kControlTxEnabled=SENDER_DIAGNOSTIC_MODE==2 || SENDER_DIAGNOSTIC_MODE==4;
-constexpr bool kStatusRxEnabled=SENDER_DIAGNOSTIC_MODE==3 || SENDER_DIAGNOSTIC_MODE==4;
+constexpr bool kUsbOnly=SENDER_USB_ONLY==1;
+constexpr bool kControlTxEnabled=!kUsbOnly && (SENDER_DIAGNOSTIC_MODE==2 || SENDER_DIAGNOSTIC_MODE==4);
+constexpr bool kStatusRxEnabled=!kUsbOnly && (SENDER_DIAGNOSTIC_MODE==3 || SENDER_DIAGNOSTIC_MODE==4);
 }
 
 static_assert(Config::kLanCs != USB_HOST_SHIELD_SS_GPIO, "LAN/USB CS conflict");
@@ -60,23 +66,16 @@ SenderHID Hid(&Usb);
 EthernetUDP udp;
 constexpr int16_t UI_TOP_Y = 15;
 
-struct ControllerState {
-  uint8_t raw[64] = {};
-  uint8_t rawLen = 0;
-  bool btnA=false, btnB=false, btnX=false, btnY=false;
-  bool btnL=false, btnR=false, btnZL=false, btnZR=false;
-  bool btnMinus=false, btnPlus=false, btnHome=false, btnCapture=false;
-  bool btnLStick=false, btnRStick=false;
-  uint8_t dpad=8, lX=128, lY=128, rX=128, rY=128;
-  uint8_t lTrigger=0, rTrigger=0;
-} padState;
+using controller_profile::ControllerState;
+controller_profile::Input controllerInput;
+const ControllerState& padState=controllerInput.value();
 
 struct State {
   bool selfTestOk=false, usbInit=false, parser=false, hidReady=false;
-  bool previousReady=false, inputSession=false, hidStalled=false;
+  bool previousReady=false, hidStalled=false;
   uint16_t vid=0, pid=0;
   uint8_t usbTaskState=0, maxRevision=0;
-  uint32_t lastHidMs=0, hidReports=0, hidReportsPerSecond=0,
+  uint32_t hidReports=0, hidReportsPerSecond=0,
            hidReportDelta=0, hidAgeMs=0, hidStallCount=0, readyDrop=0;
   bool w5500=false, lanCfg=false, udpReady=false;
   EthernetLinkStatus link=Unknown;
@@ -99,31 +98,16 @@ uint32_t nextControlMs=0, lastLinkMs=0, lastDrawMs=0, lastBatteryMs=0,
          lastSerialMs=0, lastRateMs=0, lastUsbServiceUs=0;
 uint8_t drawPhase=0;
 
-void resetPad() { padState = ControllerState{}; }
+void resetPad() { controllerInput.invalidate(); }
 
 class ControllerParser : public HIDReportParser {
  public:
-  void Parse(USBHID*, bool, uint8_t len, uint8_t* report) override {
-    if (len > sizeof(padState.raw)) len = sizeof(padState.raw);
-    memcpy(padState.raw, report, len);
-    padState.rawLen = len;
+  void Parse(USBHID*, bool hasReportId, uint8_t len, uint8_t* report) override {
     ++state.hidReports;
-    if (len < 10 || (report[0] != 0x01 && report[0] != 0x11)) return;
-    padState.lX=report[1]; padState.lY=report[2];
-    padState.rX=report[3]; padState.rY=report[4];
-    padState.lTrigger=report[5]; padState.rTrigger=report[6];
-    padState.btnZL=report[5]!=0; padState.btnZR=report[6]!=0;
-    const uint8_t b0=report[8], b1=report[9], b2=len>10 ? report[10] : 0;
-    padState.dpad=b0&0x0F; if (padState.dpad>8) padState.dpad=8;
-    padState.btnX=b0&0x10; padState.btnA=b0&0x20;
-    padState.btnB=b0&0x40; padState.btnY=b0&0x80;
-    padState.btnL=b1&0x01; padState.btnR=b1&0x02;
-    padState.btnMinus=b1&0x10; padState.btnPlus=b1&0x20;
-    padState.btnLStick=b1&0x40; padState.btnRStick=b1&0x80;
-    padState.btnHome=b2&0x01; padState.btnCapture=b2&0x02;
-    state.inputSession=true;
-    state.lastHidMs=millis();
+    controllerInput.observe(Hid.isReady(), Hid.vid(), Hid.pid());
+    if (!controllerInput.accept(hasReportId, report, len, millis())) ++rejectedReports;
   }
+  uint32_t rejectedReports=0;
 } parser;
 
 inline void prepareForUsbAccess() { digitalWrite(Config::kLanCs, HIGH); }
@@ -184,14 +168,13 @@ const char* resetText() {
   }
 }
 
-bool dualSense() {
+bool supportedController() {
   return state.usbInit && state.parser && state.hidReady &&
-         state.vid==0x054C && state.pid==0x0CE6;
+         controllerInput.connected();
 }
 
 bool inputValid(uint32_t now) {
-  return dualSense() && state.inputSession &&
-         now-state.lastHidMs < Config::kInputWindowMs;
+  return supportedController() && controllerInput.valid(now);
 }
 
 void initializeUsb() {
@@ -215,8 +198,6 @@ void updateUsbIdentity() {
   if (state.hidReady != state.previousReady) {
     if (state.previousReady && !state.hidReady) ++state.readyDrop;
     resetPad();
-    state.inputSession=false;
-    state.lastHidMs=0;
   }
   state.previousReady=state.hidReady;
   if (state.hidReady) {
@@ -224,6 +205,7 @@ void updateUsbIdentity() {
   } else {
     state.vid=state.pid=0;
   }
+  controllerInput.observe(state.hidReady, state.vid, state.pid);
 }
 
 void initializeLan() {
@@ -252,24 +234,12 @@ void initializeLan() {
   updateLanOperationDuration(startUs);
 }
 
-uint16_t buttons(const ControllerState& controller) {
-  uint16_t value=0;
-  if(controller.btnA)value|=1; if(controller.btnB)value|=2;
-  if(controller.btnX)value|=4; if(controller.btnY)value|=8;
-  if(controller.btnL)value|=0x10; if(controller.btnR)value|=0x20;
-  if(controller.btnZL)value|=0x40; if(controller.btnZR)value|=0x80;
-  if(controller.btnMinus)value|=0x100; if(controller.btnPlus)value|=0x200;
-  if(controller.btnHome)value|=0x400; if(controller.btnCapture)value|=0x800;
-  if(controller.btnLStick)value|=0x1000; if(controller.btnRStick)value|=0x2000;
-  return value;
-}
-
 void sendControl(uint32_t now) {
   const bool valid=inputValid(now);
   const ControllerState effectiveState=valid ? padState : ControllerState{};
   ControlPayload payload=neutralControl();
   payload.controlFlags=0;
-  if (dualSense()) payload.controlFlags|=kControlControllerConnected;
+  if (supportedController()) payload.controlFlags|=kControlControllerConnected;
   if (state.link==LinkON) payload.controlFlags|=kControlLanLinkOn;
   if (state.battery>=0) {
     payload.controlFlags|=kControlBatteryValid;
@@ -277,7 +247,7 @@ void sendControl(uint32_t now) {
   }
   if (valid) {
     payload.controlFlags|=kControlInputValid;
-    payload.buttons=buttons(effectiveState); payload.dpad=effectiveState.dpad;
+    payload.buttons=controller_profile::buttons(effectiveState); payload.dpad=effectiveState.dpad;
     payload.leftX=effectiveState.lX; payload.leftY=effectiveState.lY;
     payload.rightX=effectiveState.rX; payload.rightY=effectiveState.rY;
     payload.leftTrigger=effectiveState.lTrigger;
@@ -355,9 +325,9 @@ void updateStatusTimeout(uint32_t now) {
 }
 
 void updateHidStall(uint32_t now) {
-  state.hidAgeMs=(state.hidReady && state.inputSession) ? now-state.lastHidMs : 0;
-  const bool stalled=state.hidReady && state.inputSession &&
-                     now-state.lastHidMs>=250;
+  state.hidAgeMs=(state.hidReady && controllerInput.haveReport()) ? now-controllerInput.lastReportMs() : 0;
+  const bool stalled=state.hidReady && controllerInput.haveReport() &&
+                     now-controllerInput.lastReportMs()>=250;
   if (stalled != state.hidStalled) {
     Serial.printf("HID_STALL=%s\n", stalled ? "ENTER" : "EXIT");
     if (stalled) ++state.hidStallCount;
@@ -392,9 +362,10 @@ void pollLink() {
 }
 
 const char* controllerStateText(uint32_t now) {
-  if (!dualSense()) return "DISCONNECTED";
+  if (!state.hidReady) return "DISCONNECTED";
+  if (!supportedController()) return "UNSUPPORTED";
   if (inputValid(now)) return "OK";
-  return state.inputSession ? "TIMEOUT" : "NEUTRAL";
+  return controllerInput.haveReport() ? "TIMEOUT" : "NEUTRAL";
 }
 
 const char* peerStateText() {
@@ -495,6 +466,9 @@ void drawControllerInfo(uint32_t now) {
 }
 
 void logStatus(uint32_t now) {
+  Serial.printf("CONTROLLER_PROFILE=%s HID_REJECTED=%lu USB_ONLY=%u\n",
+    controller_profile::name(controllerInput.profile()),
+    (unsigned long)parser.rejectedReports, Config::kUsbOnly);
   char ipText[16];
   snprintf(ipText,sizeof(ipText),"%u.%u.%u.%u",state.actualIp[0],state.actualIp[1],
            state.actualIp[2],state.actualIp[3]);
@@ -573,7 +547,11 @@ void setup() {
   M5.Display.fillScreen(BLACK);
   state.selfTestOk=selfTest();
   Serial.printf("PROTOCOL_SELF_TEST=%s\n",state.selfTestOk?"OK":"FAIL");
-  if (state.selfTestOk) { initializeLan(); initializeUsb(); }
+  if (state.selfTestOk) {
+    if (!Config::kUsbOnly) initializeLan();
+    else SPI.begin(PIN_SPI_SCK, PIN_SPI_MISO, PIN_SPI_MOSI, -1);
+    initializeUsb();
+  }
   char ipText[16];
   snprintf(ipText,sizeof(ipText),"%u.%u.%u.%u",state.actualIp[0],state.actualIp[1],
            state.actualIp[2],state.actualIp[3]);
@@ -597,6 +575,7 @@ void loop() {
   if (state.udpReady && Config::kStatusRxEnabled) receiveOneStatusPacket(now);
   serviceUsbTask();
   now=millis();
+  updateUsbIdentity();
   sendAtMostOneControlFrame(now);
   now=millis();
   updateDisplayAndDiagnostics(now);
